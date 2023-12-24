@@ -10,6 +10,7 @@ use notes_actix::{
     },
     ping::handler::ping_service,
     types::AppState,
+    users::routes::scoped_users,
     utils::establish_connection,
 };
 use std::env;
@@ -36,15 +37,16 @@ async fn main() -> std::io::Result<()> {
         .expect("Error running DB migrations");
 
     let app_state = AppState { db_pool };
-    HttpServer::new(move || {
-        #[derive(OpenApi)]
-        #[openapi(
-            info(title = "Notes API", version = "0.1.0"),
-            components(schemas(Notes, NotesBuilder)),
-            paths(get_all_notes, create_note, get_note, update_note, delete_note)
-        )]
-        struct ApiDoc;
 
+    #[derive(OpenApi)]
+    #[openapi(
+        info(title = "Notes API", version = "0.1.0"),
+        components(schemas(Notes, NotesBuilder)),
+        paths(get_all_notes, create_note, get_note, update_note, delete_note)
+    )]
+    struct ApiDoc;
+
+    HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(app_state.clone()))
             .service(
@@ -53,9 +55,11 @@ async fn main() -> std::io::Result<()> {
             .service(index)
             .service(ping_service)
             .service(
-                web::scope("/api")
-                    .wrap(NormalizePath::trim())
-                    .service(web::scope("/v1").configure(scoped_notes)),
+                web::scope("/api").wrap(NormalizePath::trim()).service(
+                    web::scope("/v1")
+                        .configure(scoped_notes)
+                        .configure(scoped_users),
+                ),
             )
     })
     .bind(("::", app_port))?
