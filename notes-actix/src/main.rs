@@ -5,7 +5,7 @@ use notes_actix::{
             __path_create_note, __path_delete_note, __path_get_all_notes, __path_get_note,
             __path_update_note,
         },
-        model::{Notes, NotesBuilder},
+        models::{Notes, NotesBuilder},
         routes::scoped_notes,
     },
     ping::handler::ping_service,

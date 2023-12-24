@@ -8,7 +8,7 @@ use validator::Validate;
 use crate::{
     errors::{AppError, AppErrorBuilder},
     notes::{
-        model::{Notes, NotesBuilder},
+        models::{Notes, NotesBuilder},
         types::{
             DeleteNotePathParams, GetAllNotesQueryParams, GetNotePathParams, UpdateNotePathParams,
         },
