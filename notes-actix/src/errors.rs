@@ -7,18 +7,24 @@ use validator::ValidationErrors;
 
 #[derive(ThisError, Debug)]
 pub enum AppError {
+    #[error("Conflict: {0}")]
+    Conflict(JsonValue),
     #[error("Internal Server Error: {0}")]
     InternalServerError(JsonValue),
     #[error("Not Found: {0}")]
     NotFound(JsonValue),
+    #[error("Unauthorized: {0}")]
+    Unauthorized(JsonValue),
     #[error("Unprocessable Entity: {0}")]
     UnprocessableEntity(JsonValue),
 }
 impl ResponseError for AppError {
     fn error_response(&self) -> HttpResponse {
         match self {
+            Self::Conflict(ref error) => HttpResponse::Conflict().json(error),
             Self::InternalServerError(ref error) => HttpResponse::InternalServerError().json(error),
             Self::NotFound(ref error) => HttpResponse::NotFound().json(error),
+            Self::Unauthorized(ref error) => HttpResponse::Unauthorized().json(error),
             Self::UnprocessableEntity(ref error) => HttpResponse::UnprocessableEntity().json(error),
         }
     }
@@ -42,11 +48,17 @@ where
         }
     }
 
+    pub fn conflict(self) -> AppError {
+        AppError::Conflict(self.into())
+    }
     pub fn internal_server_error(self) -> AppError {
         AppError::InternalServerError(self.into())
     }
     pub fn not_found(self) -> AppError {
         AppError::NotFound(self.into())
+    }
+    pub fn unauthorized(self) -> AppError {
+        AppError::Unauthorized(self.into())
     }
     pub fn unprocessable_entity(self) -> AppError {
         AppError::UnprocessableEntity(self.into())

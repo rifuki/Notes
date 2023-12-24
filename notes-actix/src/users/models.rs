@@ -1,47 +1,48 @@
 use chrono::NaiveDateTime;
-use serde::{de, Deserialize, Deserializer, Serialize};
-use sqlx::{FromRow, Type as SqlxType};
+use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 
-#[derive(SqlxType, Serialize, Debug)]
-#[sqlx(type_name = "user_role", rename_all = "lowercase")]
-#[serde(rename_all = "lowercase")]
-pub enum UserRole {
-    Admin,
-    User,
-}
-impl<'de> Deserialize<'de> for UserRole {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        match s.to_lowercase().as_str() {
-            "admin" => Ok(UserRole::Admin),
-            "user" => Ok(UserRole::User),
-            _ => Err(de::Error::invalid_value(
-                de::Unexpected::Str(&s),
-                &"admin or user",
-            )),
-        }
-    }
-}
-
-#[derive(FromRow, Serialize, Debug)]
+#[derive(FromRow, Serialize, Clone)]
 pub struct User {
     pub id: i32,
     pub username: String,
     pub password: String,
     pub email: Option<String>,
-    pub role: UserRole,
+    pub role: String,
     #[serde(rename = "createdAt")]
     pub created_at: NaiveDateTime,
     #[serde(rename = "updatedAt")]
     pub updated_at: NaiveDateTime,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(FromRow, Serialize)]
+pub struct UserNoPassword {
+    pub id: i32,
+    pub username: String,
+    pub email: Option<String>,
+    pub role: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: NaiveDateTime,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: NaiveDateTime,
+}
+
+#[derive(Deserialize)]
 pub struct UserBuilder {
     pub username: String,
     pub password: String,
     pub email: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct UserUpdate {
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub email: Option<String>
+}
+
+#[derive(Deserialize, FromRow)]
+pub struct UserLogin {
+    pub username: String,
+    pub password: String
 }
