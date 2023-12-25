@@ -9,6 +9,8 @@ use validator::ValidationErrors;
 pub enum AppError {
     #[error("Conflict: {0}")]
     Conflict(JsonValue),
+    #[error("Forbidden: {0}")]
+    Forbidden(JsonValue),
     #[error("Internal Server Error: {0}")]
     InternalServerError(JsonValue),
     #[error("Not Found: {0}")]
@@ -22,6 +24,7 @@ impl ResponseError for AppError {
     fn error_response(&self) -> HttpResponse {
         match self {
             Self::Conflict(ref error) => HttpResponse::Conflict().json(error),
+            Self::Forbidden(ref error) => HttpResponse::Forbidden().json(error),
             Self::InternalServerError(ref error) => HttpResponse::InternalServerError().json(error),
             Self::NotFound(ref error) => HttpResponse::NotFound().json(error),
             Self::Unauthorized(ref error) => HttpResponse::Unauthorized().json(error),
@@ -32,9 +35,9 @@ impl ResponseError for AppError {
 
 // Builder for AppError
 pub struct AppErrorBuilder<T> {
-    code: u16,
-    message: String,
-    details: Option<T>,
+    pub code: u16,
+    pub message: String,
+    pub details: Option<T>,
 }
 impl<T> AppErrorBuilder<T>
 where
@@ -50,6 +53,9 @@ where
 
     pub fn conflict(self) -> AppError {
         AppError::Conflict(self.into())
+    }
+    pub fn forbidden(self) -> AppError {
+        AppError::Forbidden(self.into())
     }
     pub fn internal_server_error(self) -> AppError {
         AppError::InternalServerError(self.into())

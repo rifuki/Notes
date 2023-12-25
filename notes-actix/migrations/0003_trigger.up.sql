@@ -1,5 +1,4 @@
 -- Add up migration script here
-
 CREATE OR REPLACE FUNCTION update_updated_at_columns()
 RETURNS TRIGGER AS $$
 BEGIN

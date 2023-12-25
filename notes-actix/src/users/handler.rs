@@ -1,40 +1,121 @@
-use actix_web::{http::StatusCode, web, HttpResponse};
+use std::env;
+
+use actix_web::{
+    cookie::{time as CookieTime, Cookie, SameSite},
+    http::StatusCode,
+    web, HttpRequest, HttpResponse,
+};
 use argon2::{
     password_hash::{rand_core::OsRng, SaltString},
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
+};
+use chrono::Utc;
+use jsonwebtoken::{
+    decode as JwtDecode, encode as JwtEncode, errors::ErrorKind as JwtErrorKind, Algorithm,
+    DecodingKey, EncodingKey, Header, Validation,
 };
 use serde_json::json;
 use sqlx::{query as SqlxQuery, query_as as SqlxQueryAs};
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
-    types::AppState,
+    jwt::JwtAuth,
+    types::{AppState, Claims},
     users::{
-        models::{User, UserBuilder, UserLogin, UserNoPassword, UserUpdate},
+        helpers::{
+            purge_expired_refresh_token_cookie, CHRONO_ACCESS_EXPIRED, CHRONO_REFRESH_EXPIRED,
+        },
+        models::{User, UserClaims, UserLoginPayload, UserRegisterPayload, UserUpdatePayload},
         types::{DeleteUserPathParams, GetUserPathParams, UpdateUserPathParams},
     },
+    utils::get_current_utc_timestamp,
 };
 
+/// Authenticates user credentials and generates access tokens for accessing protected routes.
+///
+/// This endpoint allows users to log in by providing their username and password.
+///
+/// # Arguments
+///
+/// * `app_state`: Shared application state containing the database connection pool.
+/// * `json_request`: JSON payload containing the user's credentials.
+///
+/// # Returns
+///
+/// Returns a `Result` containing an `HttpResponse` on successful login or an `AppError` on failure.
+///
+/// ## Request Body
+///
+/// Expects a JSON object with the following fields:
+/// - `username`: User's username.
+/// - `password`: User's password.
+///
+/// ## Responses
+///
+/// - **200 OK:** Successfully logged in.
+///
+/// - **401 Unauthorized:** Invalid credentials provided.
+///
+/// - **500 Internal Server Error:** Failed to process the request due to server issues.
+///
+/// Note: Ensure the JSON payload contains both `username` and `password` fields for a successful login.
+#[utoipa::path(
+    post,
+    tag = "Authentication",
+    path = "/api/v1/login",
+    request_body(content = UserLoginPayload, description = "", content_type = "application/json"),
+    responses(
+        (status = 200, description = "User successfully logged in.", body = UserClaims,
+            example = json!({
+                "accessToken": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6NSwidXNlcm5hbWUiOiJqb2huIiwicm9sZSI6InVzZXIiLCJpYXQiOjE3MDM1MjI5NzIsImV4cCI6MTcwMzUyMzAzMn0.4Cg6WrMDYjpLHbBBffToWbzOdZjvwRxtXQvecFhKe9Q",
+                "code": 200,
+                "message": "Successfully logged in.",
+                "user": {
+                    "id": 1,
+                    "role": "user",
+                    "username": "john"
+                }
+            })
+        ),
+        (status = 401, description = "Unauthorized - invalid username or password.", body = isize, content_type = "application/json",
+            example = json!({
+                "code": 401,
+                "message": "Invalid username or password. Please try again."
+            })
+        ),
+        (status = 500, description = "Internal Server Error - Failed to process the request due to an unexpected server error.")
+    )
+)]
 pub async fn auth_login(
     app_state: web::Data<AppState>,
-    request_body: web::Json<UserLogin>,
+    request_body: web::Json<UserLoginPayload>,
 ) -> Result<HttpResponse, AppError> {
     let payload = request_body.into_inner();
     let db_pool = &app_state.get_ref().db_pool;
 
+    // Checking is username auth stored?.
     let stored_user = SqlxQueryAs::<_, User>("SELECT * FROM users WHERE username = $1")
         .bind(&payload.username)
-        .fetch_one(db_pool)
+        .fetch_optional(db_pool)
         .await
-        .map_err(|_| {
+        .map_err(|err| {
+            AppErrorBuilder::new(
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                String::from("Error fetching stored user."),
+                Some(err.to_string()),
+            )
+            .internal_server_error()
+        })?
+        .ok_or_else(|| {
             AppErrorBuilder::<bool>::new(
-                StatusCode::UNAUTHORIZED.as_u16(),
-                format!("Invalid username or password."),
+                StatusCode::NOT_FOUND.as_u16(),
+                String::from("Invalid username or password. Please try again."),
                 None,
             )
             .unauthorized()
         })?;
 
+    // Comparing stored with payload password.
     let parsed_stored_password = PasswordHash::new(&stored_user.password).unwrap();
     let argon2 = Argon2::default();
     let _verify_password = argon2
@@ -42,24 +123,511 @@ pub async fn auth_login(
         .map_err(|_| {
             AppErrorBuilder::<bool>::new(
                 StatusCode::UNAUTHORIZED.as_u16(),
-                format!("Invalid username or password."),
+                format!("Invalid username or password. Please try again."),
                 None,
             )
             .unauthorized()
         })?;
 
+    let claims = Claims {
+        id: stored_user.id,
+        username: stored_user.username.to_owned(),
+        role: stored_user.role,
+        iat: get_current_utc_timestamp(),
+        exp: 0,
+    };
+    // Create a new JWT access token.
+    let secret_key_access = env::var("SECRET_KEY_ACCESS").unwrap();
+    let claims_access_token = Claims {
+        exp: Utc::now()
+            .naive_utc()
+            .checked_add_signed(*CHRONO_ACCESS_EXPIRED)
+            .ok_or_else(|| {
+                AppErrorBuilder::<bool>::new(
+                    StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                    String::from("Failed to calculate eefresh token expiration."),
+                    None,
+                )
+                .internal_server_error()
+            })?
+            .timestamp(),
+        ..claims.clone()
+    };
+    let encoded_access_token = JwtEncode(
+        &Header::default(),
+        &claims_access_token,
+        &EncodingKey::from_secret(&secret_key_access.as_ref()),
+    )
+    .map_err(|err| {
+        AppErrorBuilder::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            String::from("Failed to encode access token."),
+            Some(err.to_string()),
+        )
+        .internal_server_error()
+    })?;
+    // Create a new JWT refresh token.
+    let secret_key_refresh = env::var("SECRET_KEY_REFRESH").unwrap();
+    let claims_refresh_token = Claims {
+        exp: Utc::now()
+            .naive_utc()
+            .checked_add_signed(*CHRONO_REFRESH_EXPIRED)
+            .ok_or_else(|| {
+                AppErrorBuilder::<bool>::new(
+                    StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                    String::from("Failed to calculate refresh token expiration."),
+                    None,
+                )
+                .internal_server_error()
+            })?
+            .timestamp(),
+        ..claims
+    };
+    let encoded_refresh_token = JwtEncode(
+        &Header::default(),
+        &claims_refresh_token,
+        &EncodingKey::from_secret(&secret_key_refresh.as_ref()),
+    )
+    .map_err(|err| {
+        AppErrorBuilder::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            String::from("Failed to encode refresh token."),
+            Some(err.to_string()),
+        )
+        .internal_server_error()
+    })?;
+
+    // Storing encoded refresh token to database.
+    let user_updated_refresh_token = SqlxQueryAs::<_, UserClaims>(
+        "UPDATE users SET refresh_token = $1 WHERE id = $2 RETURNING *;",
+    )
+    .bind(&encoded_refresh_token)
+    .bind(&stored_user.id)
+    .fetch_one(db_pool)
+    .await
+    .map_err(|err| {
+        AppErrorBuilder::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            String::from("Failed to set refresh token."),
+            Some(err.to_string()),
+        )
+        .internal_server_error()
+    })?;
+
+    // Final http response and giving a cookie 🍪🥰.
     let status_code = StatusCode::OK;
     let response_body = json!({
         "code": status_code.as_u16(),
-        "message": "Successfully logged in",
-        "user": stored_user
+        "message": "Successfully logged in.",
+        "user": user_updated_refresh_token,
+        "accessToken": encoded_access_token,
+    });
+    let yay_cookie = Cookie::build("refreshToken", &encoded_refresh_token)
+        .secure(false)
+        .same_site(SameSite::Strict)
+        .http_only(true)
+        .path("/")
+        .finish();
+    Ok(HttpResponse::build(status_code)
+        .cookie(yay_cookie)
+        .json(response_body))
+}
+
+/// Refreshes the user's authorization token to maintain access to protected routes.
+///
+/// This endpoint generates a new access token using a valid refresh token, allowing users to extend their session and access protected routes without re-authentication.
+///
+/// # Arguments
+///
+/// * `req`: The HTTP request object containing the refresh token in the cookie.
+/// * `app_state`: Shared application state containing the database connection pool.
+///
+/// # Returns
+///
+/// Returns a `Result` containing an `HttpResponse` on successful token refresh or an `AppError` on failure.
+///
+/// ## Responses
+///
+/// - **200 OK:** Successfully refreshed authorization. Returns an updated access token and user details.
+///
+/// - **401 Unauthorized:** Session expiration or invalid refresh token. User needs to re-authenticate.
+///
+/// - **500 Internal Server Error:** Failed to process the request due to an unexpected server error.
+///
+/// Note: This endpoint requires a valid refresh token in the cookie to generate a new access token.
+#[utoipa::path(
+    get,
+    tag = "Authentication",
+    path = "/api/v1/refresh",
+    responses(
+        (status = 200, description = "Successfully refreshed authorization.", body = UserClaims,
+            example = json!({
+                "accessToken": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6NSwidXNlcm5hbWUiOiJqb2huIiwicm9sZSI6InVzZXIiLCJpYXQiOjE3MDM1MjQ4MTcsImV4cCI6MTcwMzUyNDg3N30.LL4XRTLGL0C5syPJ5PwrX3cLbgy6659aUuSv76MO4Xk",
+                "code": 200,
+                "message": "Authorization refreshed successfully.",
+                "user": {
+                    "id": 1,
+                    "role": "user",
+                    "username": "john"
+                }
+            })
+        ),
+        (status = 401, description = "Unauthorized - Session expiration or invalid refresh token.", body = isize, content_type = "application/json", 
+            example = json!({
+                "code": 401,
+                "message": "Your session has expired. Please log in again."
+            })
+        ),
+        (status = 500, description = "Internal Server Error - Failed to process the request due to an unexpected server error.")
+    )
+)]
+pub async fn auth_refresh(
+    req: HttpRequest,
+    app_state: web::Data<AppState>,
+) -> Result<HttpResponse, AppError> {
+    // Checking if cookie refresh token is set.
+    let refresh_token_cookie = req
+        .cookie("refreshToken")
+        .map(|cookie| cookie.value().to_string())
+        .ok_or_else(|| {
+            AppErrorBuilder::<bool>::new(
+                StatusCode::UNAUTHORIZED.as_u16(),
+                String::from("You're not authorized. Please log in again."),
+                None,
+            )
+            .unauthorized()
+        })?;
+
+    // Decoding refresh token from cookie.
+    let secret_key_refresh = env::var("SECRET_KEY_REFRESH").unwrap();
+    let decoded_refresh_token = JwtDecode::<Claims>(
+        &refresh_token_cookie,
+        &DecodingKey::from_secret(&secret_key_refresh.as_ref()),
+        &Validation::new(Algorithm::HS256),
+    )
+    // Handle refresh token expired.
+    .map_err(|err| match err.kind() {
+        JwtErrorKind::ExpiredSignature => AppErrorBuilder::<bool>::new(
+            StatusCode::UNAUTHORIZED.as_u16(),
+            String::from("Your session has expired. Please log in again."),
+            None,
+        )
+        .unauthorized(),
+        _ => AppErrorBuilder::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            String::from("Refresh token is broken. Please log in again."),
+            Some(err.to_string()),
+        )
+        .unauthorized(),
+    })?;
+    if get_current_utc_timestamp() > decoded_refresh_token.claims.exp {
+        return Err(AppErrorBuilder::<bool>::new(
+            StatusCode::UNAUTHORIZED.as_u16(),
+            String::from("Your session has expired. Please log in again."),
+            None,
+        )
+        .unauthorized());
+    }
+
+    // Getting stored_user based on refresh token.
+    let db_pool = &app_state.get_ref().db_pool;
+    let stored_user = SqlxQueryAs::<_, UserClaims>("SELECT * FROM users WHERE refresh_token = $1")
+        .bind(refresh_token_cookie)
+        .fetch_optional(db_pool)
+        .await
+        .map_err(|err| {
+            AppErrorBuilder::new(
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                String::from("Error fetching stored user."),
+                Some(err.to_string()),
+            )
+            .internal_server_error()
+        })?
+        .ok_or_else(|| {
+            AppErrorBuilder::<bool>::new(
+                StatusCode::UNAUTHORIZED.as_u16(),
+                String::from("You're not authorized. Please log in again."),
+                None,
+            )
+            .unauthorized()
+        })?;
+
+    // Generate a new JWT access token.
+    let claims_access_token = Claims {
+        id: stored_user.id,
+        username: stored_user.username.to_owned(),
+        role: stored_user.role.clone(),
+        iat: get_current_utc_timestamp(),
+        exp: Utc::now()
+            .naive_utc()
+            .checked_add_signed(*CHRONO_ACCESS_EXPIRED)
+            .ok_or_else(|| {
+                AppErrorBuilder::<bool>::new(
+                    StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                    String::from("Failed to calculate refresh token expiration."),
+                    None,
+                )
+                .internal_server_error()
+            })?
+            .timestamp(),
+    };
+    let secret_key_access = env::var("SECRET_KEY_ACCESS").unwrap();
+    let encoded_access_token = JwtEncode(
+        &Header::default(),
+        &claims_access_token,
+        &EncodingKey::from_secret(&secret_key_access.as_ref()),
+    )
+    .map_err(|e| {
+        AppErrorBuilder::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            String::from("Failed to encode access token."),
+            Some(e.to_string()),
+        )
+        .internal_server_error()
+    })?;
+
+    // Final http response.
+    let status_code = StatusCode::OK;
+    let response_body = json!({
+        "code": status_code.as_u16(),
+        "message": "Authorization refreshed successfully.",
+        "user": stored_user,
+        "accessToken": encoded_access_token,
     });
     Ok(HttpResponse::build(status_code).json(response_body))
 }
 
+/// Logout the user, revoking access and deleting the refresh token from the database.
+///
+/// This endpoint is used to facilitate the logout process for a user. Upon successful logout, the user's access is revoked, and their associated refresh token is deleted from the database. Additionally, the cookie containing the refresh token is expired.
+///
+/// # Arguments
+///
+/// * `app_state`: Shared application state containing the database connection pool.
+/// * `req`: The HTTP request object containing the refresh token in the cookie.
+///
+/// # Returns
+///
+/// Returns a `Result` containing an `HttpResponse` on successful logout or an `AppError` on failure.
+///
+/// ## Responses
+///
+/// - **200 OK:** Successful logout. Returns details of the logged-out user with a null refresh token.
+///
+/// - **401 Unauthorized:**
+///   - `Cookie 'refreshToken' is missing:` The cookie containing the refresh token is missing, indicating that the user is already logged out.
+///   - `Refresh token is missing in the database:` The refresh token is not found in the database, indicating that the user is already logged out.
+///   - `Refresh token has expired by manual comparison:` The refresh token is determined to be expired through manual comparison.
+///   - `Refresh token has expired based on JwtErrorKind:` The refresh token is expired based on JwtErrorKind.
+///
+/// - **500 Internal Server Error:** Failed to process the request due to an unexpected server error.
+///
+/// Note: To perform the logout operation, this endpoint requires a valid refresh token in the cookie.
+#[utoipa::path(
+    get,
+    tag = "Authentication",
+    path = "/api/v1/logout",
+    responses(
+        (status = 200, description = "Succesful logout.", body = User, 
+            example = json!({
+                "code": 200,
+                "message": "Successfully logged out.",
+                "user": {
+                    "id": 1,
+                    "refreshToken": null,
+                    "username": "john"
+                }
+            })
+        ),
+        (status = 200, description = "", body = isize, content_type = "application/json", examples(
+            ("Cookie `refreshToken` is missing" = (
+                value = json!({
+                    "code": 401,
+                    "message": "You're already logged out. 1"
+                })
+            )),
+            ("Refresh token is misssing in database" = (
+                value = json!({
+                    "code": 401,
+                    "message": "You're already logged out. 2"
+                })
+            )),
+            ("Refresh token is expired manual comparison" = (
+                value = json!({
+                    "code": 401,
+                    "message": "You're already logged out. 3"
+                })
+            )),
+            ("Refresh token is expired on JwtErrorKind" = (
+                value = json!({
+                    "code": 401,
+                    "message": "You're already logged out. 4"
+                })
+            ))
+        )),
+        (status = 500, description = "Internal Server Error - Failed to process the request due to an unexpected server error.")
+    ),
+)]
+pub async fn auth_logout(
+    app_state: web::Data<AppState>,
+    req: HttpRequest,
+) -> Result<HttpResponse, AppError> {
+    let refresh_token_name = "refreshToken";
+    // Getting the refresh token from the cookie.
+    let refresh_token_cookie = req
+        .cookie(refresh_token_name)
+        .map(|cookie| cookie.value().to_string())
+        .ok_or_else(|| {
+            AppErrorBuilder::<bool>::new(
+                StatusCode::UNAUTHORIZED.as_u16(),
+                String::from("You're already logged out. 1"),
+                None,
+            )
+            .unauthorized()
+        })?;
+
+    // Set the refresh token to null in db.
+    let db_pool = &app_state.get_ref().db_pool;
+    let set_refresh_token_null = SqlxQueryAs::<_, User>(
+        "UPDATE users SET refresh_token = NULL WHERE refresh_token = $1 RETURNING *;",
+    )
+    .bind(&refresh_token_cookie)
+    .fetch_optional(db_pool)
+    .await
+    .map_err(|err| {
+        AppErrorBuilder::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            String::from("Failed to set refresh token."),
+            Some(err.to_string()),
+        )
+        .internal_server_error()
+    })?;
+    // If refresh token in db is not found, return error 🚮🍪.
+    if let None = set_refresh_token_null {
+        return Ok(purge_expired_refresh_token_cookie(
+            refresh_token_name,
+            "You're already logged out. 2",
+        ));
+    }
+
+    let secret_key_refresh = env::var("SECRET_KEY_REFRESH").unwrap();
+    let encoded_refresh_token = JwtDecode::<Claims>(
+        &refresh_token_cookie,
+        &DecodingKey::from_secret(&secret_key_refresh.as_ref()),
+        &Validation::new(Algorithm::HS256),
+    );
+    // Handle refresh token expired 🚮🍪.
+    if let Err(_) = encoded_refresh_token {
+        return Ok(purge_expired_refresh_token_cookie(
+            refresh_token_name,
+            "You're already logged out. 4",
+        ));
+    } else if get_current_utc_timestamp() > encoded_refresh_token.unwrap().claims.exp {
+        return Ok(purge_expired_refresh_token_cookie(
+            refresh_token_name,
+            "You're already logged out. 3",
+        ));
+    }
+
+    let stored_user = set_refresh_token_null.unwrap();
+    let user = json!({
+        "id": stored_user.id,
+        "username": stored_user.username,
+        "refresh_token": stored_user.refresh_token
+    });
+    // Final http response and burn a cookie🔥🍪.
+    let status_code = StatusCode::OK;
+    let response_body = json!({
+        "code": status_code.as_u16(),
+        "message": "Successfully logged out.",
+        "user": user
+    });
+    let boo_cookie = Cookie::build("refreshToken", "")
+        .secure(false)
+        .same_site(SameSite::Strict)
+        .http_only(true)
+        .path("/")
+        .expires(CookieTime::OffsetDateTime::now_utc())
+        .finish();
+
+    Ok(HttpResponse::build(status_code)
+        .cookie(boo_cookie)
+        .json(response_body))
+}
+
+/// Registers a new user account in the system.
+///
+/// This endpoint allows the registration of a new user account with a unique username and an optional unique email address.
+///
+/// # Arguments
+///
+/// * `app_state`: Shared application state containing the database connection pool.
+/// * `json_request`: The JSON payload containing the user registration data (username, password, and optional email).
+///
+/// # Returns
+///
+/// Returns a `Result` containing an `HttpResponse` with the created user details or an `AppError` on failure.
+///
+/// ## Request Body
+///
+/// The request body must contain a JSON object with the following fields:
+/// - `username`: The desired username for the new account.
+/// - `password`: The password for the new account.
+/// - `email` (optional): The optional email address associated with the new account.
+///
+/// ## Responses
+///
+/// - **201 Created:** User account created successfully. Returns details of the newly created user.
+///
+/// - **409 Conflict:**
+///   - `User already exists:` Indicates that the username is already taken.
+///   - `Email is associated with another account:` Indicates that the provided email is associated with another account in the system.
+///
+/// - **500 Internal Server Error:** Failed to process the request due to an unexpected server error.
+///
+/// Note: The endpoint checks for the availability of the username and, if provided, the email address before creating the user account.
+#[utoipa::path(
+    post,
+    tag = "Authentication",
+    path = "/api/v1/register",
+    request_body(content = UserRegisterPayload, description = "", content_type = "application/json"),
+    responses(
+        (status = 201, description = "User successfully created.", body = User, content_type = "application/json",
+            example = json!({
+                "code": 201,
+                "message": "User 'john' created successfully",
+                "user": {
+                    "createdAt": "2023-12-25T18:09:30.464795",
+                    "email": "johndoe@email.com",
+                    "id": 1,
+                    "password": "$argon2id$v=19$m=19456,t=2,p=1$YRwwW7CxXTKvfMI6WR1Tzw$TlJV/sXyO0+90sOAquDKbdg6NzpYx++srpBS44fQBeo",
+                    "refresh_token": null,
+                    "role": "user",
+                    "updatedAt": "2023-12-25T18:09:30.464795",
+                    "username": "john"
+                }
+            })
+        ),
+        (status = 409, description = "Conflict - username or email already exists.", body = isize, content_type = "application/json", examples(
+            ("User already exists" = (
+                value = json!({
+                    "code": 409,
+                    "message": "Username is taken."
+                })
+            )),
+            ("Email is associated with another account" = (
+                value = json!({
+                    "code": 409,
+                    "message": "Email 'johndoe@email.com' is already associated with another account. Please use another email."
+                })
+            ))
+        )),
+        (status = 500, description = "Internal Server Error - Failed to process the request due to an unexpected server error.")
+    )
+)]
 pub async fn auth_register(
     app_state: web::Data<AppState>,
-    json_request: web::Json<UserBuilder>,
+    json_request: web::Json<UserRegisterPayload>,
 ) -> Result<HttpResponse, AppError> {
     let payload = json_request.into_inner();
     let db_pool = &app_state.get_ref().db_pool;
@@ -128,7 +696,7 @@ pub async fn auth_register(
         })?
         .to_string();
 
-    let query_result = SqlxQueryAs::<_, UserNoPassword>(
+    let query_result = SqlxQueryAs::<_, User>(
         "INSERT INTO users(username, password, email) VALUES($1,$2,$3) RETURNING *;",
     )
     .bind(&payload.username)
@@ -140,18 +708,78 @@ pub async fn auth_register(
     let status_code = StatusCode::CREATED;
     let response_body = json!({
         "code": status_code.as_u16(),
-        "message": format!("User {} created successfully", &payload.username),
+        "message": format!("User '{}' created successfully", &payload.username),
         "user": query_result
     });
     Ok(HttpResponse::build(status_code).json(response_body))
 }
 
-pub async fn get_all_users(app_state: web::Data<AppState>) -> Result<HttpResponse, AppError> {
+/// Get list of users
+#[utoipa::path(
+    get,
+    tag = "Users Endpoint",
+    path = "/api/v1/users",
+    responses(
+        (status = 200, description = "Successfully all users.", body = User,
+            example = json!({
+                "code": 200,
+                "length": 1,
+                "message": "List of users retrieved successfully.",
+                "users": [
+                    {
+                        "createdAt": "2023-12-25T14:13:32.302591",
+                        "email": "johndoe@email.com",
+                        "id": 1,
+                        "password": "$argon2id$v=19$m=19456,t=2,p=1$/DbiJMPWhjO39B/SIcVksg$aKYrAF3tvl49QvZmbZNKgf6xPEwz+WIygRcl2Oc5rOY",
+                        "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6NSwidXNlcm5hbWUiOiJqb2huIiwicm9sZSI6InVzZXIiLCJpYXQiOjE3MDM1MjgwNTYsImV4cCI6MTcwMzUyODExNn0.ugS9DRvtGKj42mwZJ6Mz8T0zjeawM4gj1EunqwPkRxc",
+                        "role": "user",
+                        "updatedAt": "2023-12-25T18:14:16.903625",
+                        "username": "john"
+                    },
+                    {
+                        "createdAt": "2023-12-25T14:09:20.864831",
+                        "email": null,
+                        "id": 2,
+                        "password": "$argon2id$v=19$m=19456,t=2,p=1$pn13Fehy4QzTLs6gbt2rwQ$/0rreylTbp6iXwCYPoRoi6iAYP9nmwcl+ouJy1pSubw",
+                        "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6NCwidXNlcm5hbWUiOiJha2l6dWtpIiwicm9sZSI6InVzZXIiLCJpYXQiOjE3MDM1MTM0NzYsImV4cCI6MTcwMzUxMzQ3N30.JWmOV0Cs5M-qbaRRxnJe62ei9sMbROMCXoi-ZR1gsoE",
+                        "role": "user",
+                        "updatedAt": "2023-12-25T14:11:16.814808",
+                        "username": "akizuki"
+                      }
+                ]
+            })
+        ),
+        (status = 403, description = "Forbidden - Access to this endpoint is not allowed.", body = isize, content_type = "application/json", examples(
+            ("Not yet authorized" = (
+                value = json!({
+                    "code": 403,
+                    "message": "You're not authorized to access this endpoint."
+                })
+            ))
+        )),
+        (status = 500, description = "Internal Failed to process the request due to an unexpected server error.")
+    ),
+    security(
+        ("bearer_auth" = [])
+    )
+)]
+pub async fn get_all_users(
+    jwt_auth: JwtAuth,
+    app_state: web::Data<AppState>,
+) -> Result<HttpResponse, AppError> {
     let db_pool = &app_state.get_ref().db_pool;
 
     let query_result = SqlxQueryAs::<_, User>("SELECT * FROM users")
         .fetch_all(db_pool)
-        .await?;
+        .await
+        .map_err(|err| {
+            AppErrorBuilder::new(
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                String::from("Failed to retrieve all users."),
+                Some(err.to_string()),
+            )
+            .internal_server_error()
+        })?;
 
     let status_code = StatusCode::OK;
     let response_body = json!({
@@ -163,6 +791,41 @@ pub async fn get_all_users(app_state: web::Data<AppState>) -> Result<HttpRespons
     Ok(HttpResponse::Ok().json(response_body))
 }
 
+/// Get a single user
+#[utoipa::path(
+    get,
+    tag = "Users Endpoint",
+    path = "/api/v1/users/{id}",
+    params(GetUserPathParams),
+    responses(
+        (status = 200, description = "", body = User,
+            example = json!({
+                "code": 200,
+                "message": "User retrieved successfully.",
+                "user": {
+                    "createdAt": "2023-12-25T14:13:32.302591",
+                    "email": "johndoe@email.com",
+                    "id": 1,
+                    "password": "$argon2id$v=19$m=19456,t=2,p=1$/DbiJMPWhjO39B/SIcVksg$aKYrAF3tvl49QvZmbZNKgf6xPEwz+WIygRcl2Oc5rOY",
+                    "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6NSwidXNlcm5hbWUiOiJqb2huIiwicm9sZSI6InVzZXIiLCJpYXQiOjE3MDM1MjgwNTYsImV4cCI6MTcwMzUyODExNn0.ugS9DRvtGKj42mwZJ6Mz8T0zjeawM4gj1EunqwPkRxc",
+                    "role": "user",
+                    "updatedAt": "2023-12-25T18:14:16.903625",
+                    "username": "john"
+                }
+            })
+        ),
+        (status = 400, description = "Invalid request input", body = String, content_type = "text/plain",
+            example = json!(r#"can not parse "satu" to a i32"#)
+        ),
+        (status = 404, description = "", body = isize, content_type = "application/json",
+            example = json!({
+                "code": 404,
+                "message": "User with id: '39' not found"
+            })
+        ),
+        (status = 500, description = "Internal Failed to process the request due to an unexpected server error.")
+    )
+)]
 pub async fn get_user(
     app_state: web::Data<AppState>,
     pp: web::Path<GetUserPathParams>,
@@ -170,7 +833,7 @@ pub async fn get_user(
     let db_pool = &app_state.get_ref().db_pool;
     let user_id = pp.into_inner().id;
 
-    let query_result = SqlxQueryAs::<_, UserNoPassword>("SELECT * FROM users WHERE id = $1")
+    let query_result = SqlxQueryAs::<_, User>("SELECT * FROM users WHERE id = $1")
         .bind(user_id)
         .fetch_optional(db_pool)
         .await
@@ -201,10 +864,16 @@ pub async fn get_user(
     }
 }
 
+/// 
+#[utoipa::path(
+    put,
+    tag = "Users Endpoint",
+    path = "/api/v1/users/{id}",
+)]
 pub async fn update_user(
     app_state: web::Data<AppState>,
     pp: web::Path<UpdateUserPathParams>,
-    json_request: web::Json<UserUpdate>,
+    json_request: web::Json<UserUpdatePayload>,
 ) -> Result<HttpResponse, AppError> {
     let payload = json_request.into_inner();
     let user_id = pp.into_inner().id;
@@ -330,12 +999,28 @@ pub async fn update_user(
     }
 }
 
+/// Delete
+#[utoipa::path(
+    delete,
+    tag = "Users Endpoint",
+    path = "/api/v1/users/{id}",
+)]
 pub async fn delete_user(
+    jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
     pp: web::Path<DeleteUserPathParams>,
 ) -> Result<HttpResponse, AppError> {
-    let db_pool = &app_state.get_ref().db_pool;
     let user_id = pp.into_inner().id;
+    let auth_role = jwt_auth.role;
+    if auth_role != "admin" {
+        return Err(AppErrorBuilder::<bool>::new(
+            StatusCode::FORBIDDEN.as_u16(),
+            String::from("You're not allowed to access this."),
+            None,
+        )
+        .forbidden());
+    }
+    let db_pool = &app_state.get_ref().db_pool;
 
     let query_result = SqlxQueryAs::<_, User>("DELETE FROM users WHERE id = $1 RETURNING *;")
         .bind(user_id)
