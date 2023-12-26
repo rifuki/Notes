@@ -97,7 +97,12 @@ impl From<ValidationErrors> for AppError {
         for (field, errors) in validation_errors.field_errors().iter() {
             let errors = errors
                 .iter()
-                .map(|error| error.message.clone().unwrap().to_string())
+                .map(|error| {
+                    error
+                        .message
+                        .as_ref()
+                        .map_or_else(|| error.code.to_string(), |msg| msg.to_string())
+                })
                 // .map(|error| json!(error.message))
                 .collect::<Vec<String>>();
             // .collect::<Vec<JsonValue>>();

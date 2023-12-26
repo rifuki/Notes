@@ -10,7 +10,7 @@ use notes_actix::{
         models::{Notes, NotesBuilder},
         routes::scoped_notes,
     },
-    ping::handler::ping_service,
+    ping::handler::{__path_ping_service, ping_service},
     types::AppState,
     users::{
         handler::{
@@ -18,7 +18,7 @@ use notes_actix::{
             __path_delete_user, __path_get_all_users, __path_get_user, __path_update_user,
             auth_login, auth_logout, auth_refresh, auth_register,
         },
-        models::{User, UserClaims, UserLoginPayload, UserRegisterPayload},
+        models::{User, UserClaims, UserLoginPayload, UserRegisterPayload, UserUpdatePayload},
         routes::scoped_users,
     },
     utils::establish_connection,
@@ -64,9 +64,22 @@ async fn main() -> std::io::Result<()> {
 
     #[derive(OpenApi)]
     #[openapi(
-        info(title = "Notes API", version = "0.1.0"),
-        paths(get_all_notes, create_note, get_note, update_note, delete_note, auth_login, auth_logout, auth_refresh, auth_register, get_all_users, get_user, update_user, delete_user),
-        components(schemas(Notes, NotesBuilder, User, UserClaims, UserLoginPayload, UserRegisterPayload)),
+        info(
+            title = "Notes API",
+            version = "0.1.0",
+            description = "This API provides endpoints to manage notes and user authentication.",
+            contact(
+                name = "rifuki",
+                email = "mahomarifuki@gmail.com",
+                url = "https://rifuki.codes"
+            ),
+            license(
+                name = "MIT License",
+                url = "https://opensource.org/licenses/MIT"
+            )
+        ),
+        paths(get_all_notes, create_note, get_note, update_note, delete_note, auth_login, auth_logout, auth_refresh, auth_register, get_all_users, get_user, update_user, delete_user, ping_service),
+        components(schemas(Notes, NotesBuilder, User, UserClaims, UserLoginPayload, UserRegisterPayload, UserUpdatePayload)),
         modifiers(&SecurityAddon)
     )]
     struct ApiDoc;

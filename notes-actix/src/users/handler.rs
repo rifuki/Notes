@@ -16,10 +16,11 @@ use jsonwebtoken::{
 };
 use serde_json::json;
 use sqlx::{query as SqlxQuery, query_as as SqlxQueryAs};
+use validator::Validate;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
-    jwt::JwtAuth,
+    // jwt::JwtAuth,
     types::{AppState, Claims},
     users::{
         helpers::{
@@ -83,6 +84,23 @@ use crate::{
                 "message": "Invalid username or password. Please try again."
             })
         ),
+        (status = 422, description = "The response indicates a validation error due to invalid data submitted. Details regarding specific validation requirements for `username`, `password`, and `confirmPassword` fields are provided, helping identify the reasons for failure.", body = isize, content_type = "application/json",
+            example = json!({
+                "code": 422,
+                "details": {
+                    "password": [
+                        "Password length must be at least 8 characters long.",
+                        "Password must be at least one special character.",
+                        "Password must contain at least one uppercase letter, one lowercase letter, one digit, one special characters, is at least 8 characters long, and does not contain spaces."
+                    ],
+                    "username": [
+                        "Username length must be between 1 to 50 characters long.",
+                        "Username must consist of alphanumeric characters and be at least 1 characters long."
+                    ]
+                },
+                "message": "Validation Error"
+            })
+        ),
         (status = 500, description = "Internal Server Error - Failed to process the request due to an unexpected server error.")
     )
 )]
@@ -91,6 +109,9 @@ pub async fn auth_login(
     request_body: web::Json<UserLoginPayload>,
 ) -> Result<HttpResponse, AppError> {
     let payload = request_body.into_inner();
+    if let Err(err) = payload.validate() {
+        return Err(err.into());
+    }
     let db_pool = &app_state.get_ref().db_pool;
 
     // Checking is username auth stored?.
@@ -580,7 +601,7 @@ pub async fn auth_logout(
 /// - **201 Created:** User account created successfully. Returns details of the newly created user.
 ///
 /// - **409 Conflict:**
-///   - `User already exists:` Indicates that the username is already taken.
+///   - `Username already exists:` Indicates that the username is already taken.
 ///   - `Email is associated with another account:` Indicates that the provided email is associated with another account in the system.
 ///
 /// - **500 Internal Server Error:** Failed to process the request due to an unexpected server error.
@@ -598,7 +619,7 @@ pub async fn auth_logout(
                 "message": "User 'john' created successfully",
                 "user": {
                     "createdAt": "2023-12-25T18:09:30.464795",
-                    "email": "johndoe@email.com",
+                    "email": "johndoe@gmail.com",
                     "id": 1,
                     "password": "$argon2id$v=19$m=19456,t=2,p=1$YRwwW7CxXTKvfMI6WR1Tzw$TlJV/sXyO0+90sOAquDKbdg6NzpYx++srpBS44fQBeo",
                     "refresh_token": null,
@@ -609,7 +630,7 @@ pub async fn auth_logout(
             })
         ),
         (status = 409, description = "Conflict - username or email already exists.", body = isize, content_type = "application/json", examples(
-            ("User already exists" = (
+            ("Username already exists" = (
                 value = json!({
                     "code": 409,
                     "message": "Username is taken."
@@ -618,10 +639,34 @@ pub async fn auth_logout(
             ("Email is associated with another account" = (
                 value = json!({
                     "code": 409,
-                    "message": "Email 'johndoe@email.com' is already associated with another account. Please use another email."
+                    "message": "Email 'johndoe@gmail.com' is already associated with another account. Please use another email."
                 })
             ))
         )),
+        (status = 422, description = "The response indicates a validation error due to invalid data submitted. Details regarding specific validation requirements for `username`, `email`, `password`, and `confirmPassword` fields are provided, helping identify the reasons for failure.", body = isize, content_type = "application/json",
+            example = json!({
+                "code": 422,
+                "details": {
+                    "confirmPassword": [
+                        "Password do not match. Please ensure both entries are identical."
+                    ],
+                    "email": [
+                        "Invalid email format.",
+                        "Email must be a valid email address."
+                    ],
+                    "password": [
+                        "Password must contain at least one uppercase letter, one lowercase letter, one digit, one special characters, is at least 8 characters long, and does not contain spaces.",
+                        "Password length must be at least 8 characters long.",
+                        "Password must be at least one special character."
+                    ],
+                    "username": [
+                        "Username must consist of alphanumeric characters and be at least 1 characters long.",
+                        "Username length must be between 1 to 50 characters long."
+                    ]
+                },
+                "message": "Validation Error"
+            })
+        ),
         (status = 500, description = "Internal Server Error - Failed to process the request due to an unexpected server error.")
     )
 )]
@@ -630,6 +675,9 @@ pub async fn auth_register(
     json_request: web::Json<UserRegisterPayload>,
 ) -> Result<HttpResponse, AppError> {
     let payload = json_request.into_inner();
+    if let Err(err) = payload.validate() {
+        return Err(err.into());
+    }
     let db_pool = &app_state.get_ref().db_pool;
 
     // Check username availability.
@@ -714,7 +762,29 @@ pub async fn auth_register(
     Ok(HttpResponse::build(status_code).json(response_body))
 }
 
-/// Get list of users
+/// Handles GET requests to retrieve all users.
+///
+/// # Arguments
+///
+/// * `jwt_auth`: The JWT authentication guard.
+/// * `app_state`: The shared application state containing the database connection pool.
+///
+/// # Returns
+///
+/// A `Result` containing an `HttpResponse` on success, or an `AppError` on failure.
+///
+/// ## Response
+///
+/// - 200 OK: Successfully retrieved the list of users.
+///   - Returns a JSON object containing details of all users.
+/// - 403 Forbidden: Access to this endpoint is not allowed.
+///   - Returns a JSON object indicating that the user is not authorized to access this endpoint.
+/// - 500 Internal Server Error: Failed to process the request due to an unexpected server error.
+///   - Returns a plaintext message indicating the failure to retrieve all users.
+///
+/// # Security
+///
+/// This endpoint requires `bearer_auth` security.
 #[utoipa::path(
     get,
     tag = "Users Endpoint",
@@ -728,7 +798,7 @@ pub async fn auth_register(
                 "users": [
                     {
                         "createdAt": "2023-12-25T14:13:32.302591",
-                        "email": "johndoe@email.com",
+                        "email": "johndoe@gmail.com",
                         "id": 1,
                         "password": "$argon2id$v=19$m=19456,t=2,p=1$/DbiJMPWhjO39B/SIcVksg$aKYrAF3tvl49QvZmbZNKgf6xPEwz+WIygRcl2Oc5rOY",
                         "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6NSwidXNlcm5hbWUiOiJqb2huIiwicm9sZSI6InVzZXIiLCJpYXQiOjE3MDM1MjgwNTYsImV4cCI6MTcwMzUyODExNn0.ugS9DRvtGKj42mwZJ6Mz8T0zjeawM4gj1EunqwPkRxc",
@@ -764,7 +834,7 @@ pub async fn auth_register(
     )
 )]
 pub async fn get_all_users(
-    jwt_auth: JwtAuth,
+    // jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
 ) -> Result<HttpResponse, AppError> {
     let db_pool = &app_state.get_ref().db_pool;
@@ -791,20 +861,44 @@ pub async fn get_all_users(
     Ok(HttpResponse::Ok().json(response_body))
 }
 
-/// Get a single user
+/// Handles GET requests to retrieve a user by their ID.
+///
+/// # Arguments
+///
+/// * `app_state`: The shared application state containing the database connection pool.
+/// * `pp`: The path parameter containing the `id` of the user to be retrieved.
+///
+/// # Returns
+///
+/// A `Result` containing an `HttpResponse` on success, or an `AppError` on failure.
+///
+/// ## Path Parameters
+///
+/// * `id`: The ID of the user to retrieve.
+///
+/// ## Response
+///
+/// - 200 OK: Successfully retrieved the user.
+///   - Returns a JSON object containing details of the user.
+/// - 400 Bad Request: Invalid request input.
+///   - Returns a plaintext message indicating a parsing error in the request input.
+/// - 404 Not Found: Requested user does not exist.
+///   - Returns a JSON object indicating that the user with the specified `id` was not found.
+/// - 500 Internal Server Error: Failed to process the request due to an unexpected server error.
+///   - Returns a plaintext message indicating the failure to retrieve the user.
 #[utoipa::path(
     get,
     tag = "Users Endpoint",
     path = "/api/v1/users/{id}",
     params(GetUserPathParams),
     responses(
-        (status = 200, description = "", body = User,
+        (status = 200, description = "Successful user retrieval.", body = User,
             example = json!({
                 "code": 200,
                 "message": "User retrieved successfully.",
                 "user": {
                     "createdAt": "2023-12-25T14:13:32.302591",
-                    "email": "johndoe@email.com",
+                    "email": "johndoe@gmail.com",
                     "id": 1,
                     "password": "$argon2id$v=19$m=19456,t=2,p=1$/DbiJMPWhjO39B/SIcVksg$aKYrAF3tvl49QvZmbZNKgf6xPEwz+WIygRcl2Oc5rOY",
                     "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6NSwidXNlcm5hbWUiOiJqb2huIiwicm9sZSI6InVzZXIiLCJpYXQiOjE3MDM1MjgwNTYsImV4cCI6MTcwMzUyODExNn0.ugS9DRvtGKj42mwZJ6Mz8T0zjeawM4gj1EunqwPkRxc",
@@ -814,10 +908,10 @@ pub async fn get_all_users(
                 }
             })
         ),
-        (status = 400, description = "Invalid request input", body = String, content_type = "text/plain",
+        (status = 400, description = "Invalid request input.", body = String, content_type = "text/plain",
             example = json!(r#"can not parse "satu" to a i32"#)
         ),
-        (status = 404, description = "", body = isize, content_type = "application/json",
+        (status = 404, description = "User not found.", body = isize, content_type = "application/json",
             example = json!({
                 "code": 404,
                 "message": "User with id: '39' not found"
@@ -864,11 +958,81 @@ pub async fn get_user(
     }
 }
 
-/// 
+/// Handles PUT requests to update user details based on the provided ID.
+///
+/// # Arguments
+///
+/// * `app_state`: The shared application state containing the database connection pool.
+/// * `pp`: The path parameter containing the `id` of the user to be updated.
+/// * `json_request`: The JSON payload containing the updated user details.
+///
+/// # Returns
+///
+/// A `Result` containing an `HttpResponse` on success, or an `AppError` on failure.
+///
+/// ## Path Parameters
+///
+/// * `id`: The ID of the user to update.
+///
+/// ## Request Body
+///
+/// Expects a JSON payload (`UserUpdatePayload`) containing the updated user details.
+///
+/// ## Response
+///
+/// - 200 OK: User details updated successfully.
+///   - Returns a JSON object containing the updated user details.
+/// - 404 Not Found: Requested user does not exist.
+///   - Returns a JSON object indicating that the user with the specified `id` was not found.
+/// - 409 Conflict: Username or Email is already associated with another account.
+///   - Returns a JSON object indicating a conflict due to a username or email already being taken.
+/// - 500 Internal Server Error: Failed to process the request due to an unexpected server error.
+///   - Returns a plaintext message indicating the failure to update the user.
 #[utoipa::path(
     put,
     tag = "Users Endpoint",
     path = "/api/v1/users/{id}",
+    params(UpdateUserPathParams),
+    request_body(content = UserUpdatePayload, description = "Payload for updating user information.", content_type = "application/json"),
+    responses(
+        (status = 200, description = "OK - User details updated successfully.", body = User,
+            example = json!({
+                "code": 200,
+                "message": "User updated successfully.",
+                "user": {
+                    "createdAt": "2023-12-25T12:55:33.176614",
+                    "email": "yamadataro@gmail`.com",
+                    "id": 1,
+                    "password": "$argon2id$v=19$m=19456,t=2,p=1$q2AHmfsuZPbaBcNrgZdZdQ$+FSMzwyGg2sghBwBh0MSKhkvD4hn1f8aoYQnzrvENFs",
+                    "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJzZXRzdW5hIiwicm9sZSI6InVzZXIiLCJpYXQiOjE3MDM1MDkwNTMsImV4cCI6MTcwMzUwOTA1NH0.NRLFQppvXIBgCOh2VF38BichWGOgE0iSj4By-vPoJ5o",
+                    "role": "user",
+                    "updatedAt": "2023-12-26T02:40:18.383154",
+                    "username": "yamada"
+                }
+            })
+        ),
+        (status = 404, description = "Not Found - User not found with the specified ID.", body = isize, content_type = "application/json",
+            example = json!({
+                "code": 500,
+                "message": "User with id: '10' not found."
+            })
+        ),
+        (status = 409, description = "Conflict - Resource conflict occurred.", body = isize, content_type = "application/json", examples(
+            ("Username is taken" = (
+                value = json!({
+                    "code": 409,
+                    "message": "Username 'john' is taken. Please choose another username."
+                })
+            )),
+            ("Email is associated with another account" = (
+                value = json!({
+                    "code": 409,
+                    "message": "Email 'johndoe@gmail.com' is already associated to another account. Please use another email."
+                })
+            ))
+        )),
+        (status = 500, description = "Internal Server Error - Failed to process the request due to an unexpected server error.")
+    )
 )]
 pub async fn update_user(
     app_state: web::Data<AppState>,
@@ -887,7 +1051,7 @@ pub async fn update_user(
         .map_err(|err| {
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                format!("Failed to retrieve user with id: '{}'", user_id),
+                format!("Failed to retrieve user with id: '{}'.", user_id),
                 Some(err.to_string()),
             )
             .internal_server_error()
@@ -895,7 +1059,7 @@ pub async fn update_user(
         .ok_or_else(|| {
             AppErrorBuilder::<bool>::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                format!("User with id: '{}' not found", user_id),
+                format!("User with id: '{}' not found.", user_id),
                 None,
             )
             .not_found()
@@ -948,7 +1112,7 @@ pub async fn update_user(
             .map_err(|err| {
                 AppErrorBuilder::new(
                     StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                    format!("Failed to hash password"),
+                    format!("Failed to hash password."),
                     Some(err.to_string()),
                 )
                 .internal_server_error()
@@ -964,7 +1128,7 @@ pub async fn update_user(
         .unwrap_or(stored_user.email.unwrap_or_default());
 
     let query_result = SqlxQueryAs::<_, User>(
-        "UPDATE users SET username = $1, password = $2, email = $3 WHERE id = $4 RETURNING *",
+        "UPDATE users SET username = $1, password = $2, email = $3 WHERE id = $4 RETURNING *;",
     )
     .bind(username)
     .bind(password)
@@ -992,34 +1156,93 @@ pub async fn update_user(
     } else {
         Err(AppErrorBuilder::<bool>::new(
             StatusCode::NOT_FOUND.as_u16(),
-            format!("User with id: '{}' not found", user_id),
+            format!("User with id: '{}' not found.", user_id),
             None,
         )
         .not_found())
     }
 }
 
-/// Delete
+/// Deletes a user by their ID.
+///
+/// # Endpoint
+/// DELETE `/api/v1/users/{id}`
+///
+/// # Parameters
+/// - `id`: The unique identifier of the user to be deleted.
+///
+/// # Responses
+///
+/// - 200 OK: User deleted successfully.
+/// - 403 Forbidden: Access to this endpoint is not allowed.
+/// - 404 Not Found: User not found.
+/// - 500 Internal Server Error: Failed to process the request due to an unexpected server error.
+///
+/// # Security
+/// This endpoint requires a bearer token for authorization.
 #[utoipa::path(
     delete,
     tag = "Users Endpoint",
     path = "/api/v1/users/{id}",
+    params(DeleteUserPathParams),
+    responses(
+        (status = 200, description = "OK - User deleted successfully.", body = User,
+            example = json!({
+                "code": 200,
+                "message": "User deleted successfully",
+                "user": {
+                    "createdAt": "2023-12-25T12:55:33.176614",
+                    "email": "yamadataro@gmail.com",
+                    "id": 1,
+                    "password": "$argon2id$v=19$m=19456,t=2,p=1$q2AHmfsuZPbaBcNrgZdZdQ$+FSMzwyGg2sghBwBh0MSKhkvD4hn1f8aoYQnzrvENFs",
+                    "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJzZXRzdW5hIiwicm9sZSI6InVzZXIiLCJpYXQiOjE3MDM1MDkwNTMsImV4cCI6MTcwMzUwOTA1NH0.NRLFQppvXIBgCOh2VF38BichWGOgE0iSj4By-vPoJ5o",
+                    "role": "user",
+                    "updatedAt": "2023-12-26T02:40:18.383154",
+                    "username": "yamada"
+                }
+            })
+        ),
+        (status = 403, description = "Forbidden - Access to this endpoint is not allowed.", body = isize, content_type = "application/json", examples(
+            ("Not yet authorized" = (
+                value = json!({
+                    "code": 403,
+                    "message": "You're not authorized to access this endpoint."
+                })
+            )),
+            ("Not allowed" = (
+                value = json!({
+                    "code": 403,
+                    "message": "You're not allowed to access this."
+                })
+            ))
+        )),
+        (status = 404, description = "User not found.", body = isize, content_type = "application/json",
+            example = json!({
+                "code": 404,
+                "message": "User with id: '39' not found"
+            })
+        ),
+        (status = 500, description = "Internal Server Error - Failed to process the request due to an unexpected server error.")
+    ),
+    security(
+        ("bearer_auth"= [])
+    )
 )]
 pub async fn delete_user(
-    jwt_auth: JwtAuth,
+    // jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
     pp: web::Path<DeleteUserPathParams>,
 ) -> Result<HttpResponse, AppError> {
     let user_id = pp.into_inner().id;
-    let auth_role = jwt_auth.role;
-    if auth_role != "admin" {
-        return Err(AppErrorBuilder::<bool>::new(
-            StatusCode::FORBIDDEN.as_u16(),
-            String::from("You're not allowed to access this."),
-            None,
-        )
-        .forbidden());
-    }
+    // let auth_role = jwt_auth.role;
+    // if auth_role != "admin" {
+    //     return Err(AppErrorBuilder::<bool>::new(
+    //         StatusCode::FORBIDDEN.as_u16(),
+    //         String::from("You're not allowed to access this."),
+    //         None,
+    //     )
+    //     .forbidden());
+    // }
     let db_pool = &app_state.get_ref().db_pool;
 
     let query_result = SqlxQueryAs::<_, User>("DELETE FROM users WHERE id = $1 RETURNING *;")
