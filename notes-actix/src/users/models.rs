@@ -127,20 +127,94 @@ pub struct UserRegisterPayload {
     pub confirm_password: String,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema, Validate)]
 pub struct UserUpdatePayload {
     #[schema(example = "john", required = false)]
+    #[validate(
+        regex(
+            path = "RE_USERNAME",
+            message = "Username must consist of alphanumeric characters and be at least 1 characters long."
+        ),
+        length(
+            min = 1,
+            max = 50,
+            message = "Username length must be between 1 to 50 characters long."
+        )
+    )]
+    #[serde(deserialize_with = "to_option_lowercase")]
     pub username: Option<String>,
-    #[schema(example = "Johndoe123@", required = false)]
-    pub password: Option<String>,
     #[schema(example = "johndoe@gmail.com", required = false)]
+    #[validate(
+        custom = "validate_email",
+        // email(message = "Email must be a valid email address.")
+    )]
+    #[serde(deserialize_with = "to_option_lowercase")]
+    #[serde(default)]
     pub email: Option<String>,
+    #[schema(example = "Johndoe123@", required = false)]
+    #[validate(
+        custom(
+            function = "validate_password",
+            message = "Password must contain at least one uppercase letter, one lowercase letter, one digit, one special characters, is at least 8 characters long, and does not contain spaces."
+        ),
+        length(
+            min = 8,
+            message = "Password length must be at least 8 characters long."
+        ),
+        regex(
+            path = "RE_PASSWORD",
+            message = "Password must be at least one special character."
+        )
+    )]
+    pub password: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Validate, ToSchema)]
+pub struct AdminBuilder {
+    #[schema(example = "john", required = false)]
+    #[validate(
+        regex(
+            path = "RE_USERNAME",
+            message = "Username must consist of alphanumeric characters and be at least 1 characters long."
+        ),
+        length(
+            min = 1,
+            max = 50,
+            message = "Username length must be between 1 to 50 characters long."
+        )
+    )]
+    #[serde(deserialize_with = "to_lowercase")]
+    pub username: String,
+    #[schema(example = "Johndoe123@", required = false)]
+    #[validate(
+        custom(
+            function = "validate_password",
+            message = "Password must contain at least one uppercase letter, one lowercase letter, one digit, one special characters, is at least 8 characters long, and does not contain spaces."
+        ),
+        length(
+            min = 8,
+            message = "Password length must be at least 8 characters long."
+        ),
+        regex(
+            path = "RE_PASSWORD",
+            message = "Password must be at least one special character."
+        )
+    )]
+    pub password: String,
+    #[schema(example = "Johndoe123@", required = false)]
+    #[validate(must_match(
+        other = "password",
+        message = "Password do not match. Please ensure both entries are identical."
+    ))]
+    #[serde(rename = "confirmPassword")]
+    pub confirm_password: String,
+    #[serde(default, rename = "secretKey")]
+    pub secret_key: String,
 }
 
 lazy_static! {
     static ref RE_USERNAME: Regex = Regex::new(r"^[0-9a-zA-Z]{1,}$").unwrap();
-    static ref RE_PASSWORD: Regex =
-        Regex::new(r"^.*?[^.*?[!@#$%^&*?_+=~|.,:;(){}\[\]<>].*$].*$").unwrap();
+    static ref RE_PASSWORD: Regex = Regex::new(r"^.*?[!@#$%^&*?_+=~|.,:;(){}\[\]<>].*$").unwrap();
 }
 
 fn to_lowercase<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -194,6 +268,10 @@ fn validate_password(password: &str) -> Result<(), ValidationError> {
 
 fn validate_email(email: &str) -> Result<(), ValidationError> {
     let valid_domains = ["gmail", "outlook", "icloud", "yahoo", "mail", "aol"];
+
+    if email == "null" {
+        return Ok(());
+    }
 
     let email_parts = email.split("@").collect::<Vec<&str>>();
     if email_parts.len() != 2 {

@@ -1023,8 +1023,14 @@ pub async fn update_user(
     pp: web::Path<UpdateUserPathParams>,
     json_request: web::Json<UserUpdatePayload>,
 ) -> Result<HttpResponse, AppError> {
-    let payload = json_request.into_inner();
     let user_id = pp.into_inner().id;
+
+    let payload = json_request.into_inner();
+    // Validate user input entity.
+    if let Err(err) = payload.validate() {
+        return Err(err.into());
+    }
+
     let db_pool = &app_state.get_ref().db_pool;
 
     // Check is user update exists.
@@ -1076,6 +1082,7 @@ pub async fn update_user(
             .await
             .is_ok();
         if is_email_associated && new_email != &stored_user.email.clone().unwrap_or_default() {
+            /* <- potential buggy */
             return Err(AppErrorBuilder::<bool>::new(
                 StatusCode::CONFLICT.as_u16(),
                 format!(
@@ -1107,20 +1114,33 @@ pub async fn update_user(
         stored_user.password
     };
     let username = payload.username.unwrap_or(stored_user.username);
-    let email = payload
-        .email
-        .unwrap_or(stored_user.email.unwrap_or_default());
+    // let email = payload
+    //     .email
+    //     .unwrap_or(stored_user.email.unwrap_or_default()); /* <- potential buggy */
+    let email = match payload.email.as_deref() {
+        Some("null") => None,
+        Some(email) => Some(email),
+        None => stored_user.email.as_deref().or(Some("null")),
+    };
 
-    let query_result = SqlxQueryAs::<_, User>(
-        "UPDATE users SET username = $1, password = $2, email = $3 WHERE id = $4 RETURNING *;",
-    )
-    .bind(username)
-    .bind(password)
-    .bind(email)
-    .bind(user_id)
-    .fetch_optional(db_pool)
-    .await
-    .map_err(|err| {
+    let sql_query = if email == Some("null") {
+        SqlxQueryAs::<_, User>(
+            "UPDATE users SET username = $1, password = $2 WHERE id = $3 RETURNING *;",
+        )
+        .bind(username)
+        .bind(password)
+        .bind(user_id)
+    } else {
+        SqlxQueryAs::<_, User>(
+            "UPDATE users SET username = $1, password = $2, email = $3 WHERE id = $4 RETURNING *;",
+        )
+        .bind(username)
+        .bind(password)
+        .bind(email)
+        .bind(user_id)
+    };
+
+    let query_result = sql_query.fetch_optional(db_pool).await.map_err(|err| {
         AppErrorBuilder::new(
             StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             format!("Failed to update user with id: '{}'", user_id),

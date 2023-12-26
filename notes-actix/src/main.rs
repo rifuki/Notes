@@ -19,7 +19,7 @@ use notes_actix::{
             auth_login, auth_logout, auth_refresh, auth_register,
         },
         models::{User, UserClaims, UserLoginPayload, UserRegisterPayload, UserUpdatePayload},
-        routes::scoped_users,
+        routes::scoped_users, admin::register_admin,
     },
     utils::establish_connection,
 };
@@ -115,6 +115,7 @@ async fn main() -> std::io::Result<()> {
                         .route("/register", web::post().to(auth_register))
                         .route("/logout", web::get().to(auth_logout))
                         .route("/refresh", web::get().to(auth_refresh))
+                        .route("/admin/register", web::post().to(register_admin))
                         .configure(scoped_notes)
                         .configure(scoped_users),
                 ),

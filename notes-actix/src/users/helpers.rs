@@ -5,6 +5,10 @@ use actix_web::{
     http::StatusCode,
     HttpResponse,
 };
+use argon2::{
+    password_hash::{rand_core::OsRng, SaltString},
+    Argon2, PasswordHasher,
+};
 use chrono::Duration as ChronoDuration;
 use once_cell::sync::Lazy;
 use serde_json::Value as JsonValue;
@@ -76,4 +80,22 @@ pub async fn is_username_taken(username: &str, db_pool: &DbPool) -> Result<(), A
     }
 
     Ok(())
+}
+
+pub fn hashing_password(password: &str) -> Result<String, AppError> {
+    let salt_string = SaltString::generate(OsRng);
+    let argon2 = Argon2::default();
+
+    let hashed_password = argon2
+        .hash_password(password.as_ref(), &salt_string)
+        .map_err(|err| {
+            AppErrorBuilder::new(
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                String::from("Failed to hash password."),
+                Some(err.to_string()),
+            )
+            .internal_server_error()
+        })?;
+
+    Ok(hashed_password.to_string())
 }
