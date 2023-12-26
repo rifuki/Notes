@@ -38,7 +38,7 @@ use crate::{
 /// pagination, and when no notes are found matching the provided search criteria.
 #[utoipa::path(
     get,
-    tag = "Notes",
+    tag = "Notes Endpoint",
     path = "/api/v1/notes",
     params(GetAllNotesQueryParams),
     responses(
@@ -209,7 +209,7 @@ pub async fn get_all_notes(
 /// - Status Code 500: Unexpected server-side error during request processing.
 #[utoipa::path(
     post,
-    tag = "Notes", 
+    tag = "Notes Endpoint", 
     path = "/api/v1/notes",
     request_body(content = NotesBuilder, description = "JSON payload containing the title and body of the note.", content_type = "application/json"),
     responses(
@@ -289,7 +289,7 @@ pub async fn create_note(
 /// -    - Returns a JSON object indicating a failure to retrieve the note due to an unexpected server error.
 #[utoipa::path(
     get,
-    tag = "Notes",
+    tag = "Notes Endpoint",
     path = "/api/v1/notes/{id}",
     params(GetNotePathParams),
     responses(
@@ -395,7 +395,7 @@ pub async fn get_note(
 /// -   - Returns a JSON object indicating a failure to update the note due to an unexpected server error.
 #[utoipa::path(
     put,
-    tag = "Notes",
+    tag = "Notes Endpoint",
     path = "/api/v1/notes/{id}",
     params(UpdateNotePathParams),
     request_body(content = NotesBuilder, description = "JSON payload containing the title and body of the note.", content_type = "application/json"),
@@ -508,7 +508,7 @@ pub async fn update_note(
 /// Examples for response details are provided for 404 and 500 status codes, specifying different scenarios that might occur.
 #[utoipa::path(
     delete,
-    tag = "Notes",
+    tag = "Notes Endpoint",
     path = "/api/v1/notes/{id}",
     params(DeleteNotePathParams),
     responses(
