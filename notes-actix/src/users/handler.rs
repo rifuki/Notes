@@ -32,6 +32,8 @@ use crate::{
     utils::get_current_utc_timestamp,
 };
 
+use super::helpers::is_username_taken;
+
 /// Authenticates user credentials and generates access tokens for accessing protected routes.
 ///
 /// This endpoint allows users to log in by providing their username and password.
@@ -681,27 +683,8 @@ pub async fn auth_register(
     let db_pool = &app_state.get_ref().db_pool;
 
     // Check username availability.
-    let is_username_taken = SqlxQuery("SELECT 1 FROM users WHERE username = $1")
-        .bind(&payload.username)
-        .fetch_optional(db_pool)
-        .await
-        .map_err(|err| {
-            AppErrorBuilder::new(
-                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                String::from("Failed to check if username is taken."),
-                Some(err.to_string()),
-            )
-            .internal_server_error()
-        })?
-        .is_some();
-    if is_username_taken {
-        return Err(AppErrorBuilder::<bool>::new(
-            StatusCode::CONFLICT.as_u16(),
-            String::from("Username is taken."),
-            None,
-        )
-        .conflict());
-    }
+    let _ = is_username_taken(&payload.username, db_pool).await?;
+
     // Check email availability.
     if let Some(ref email) = &payload.email {
         let is_email_associated = SqlxQuery("SELECT 1 FROM users WHERE email = $1")
@@ -730,6 +713,7 @@ pub async fn auth_register(
         }
     }
 
+    // Hashing user password.
     let salt_string = SaltString::generate(OsRng);
     let argon2 = Argon2::default();
     let hashed_password = argon2

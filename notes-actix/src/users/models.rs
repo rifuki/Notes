@@ -100,6 +100,7 @@ pub struct UserRegisterPayload {
         email(message = "Email must be a valid email address.")
     )]
     #[serde(deserialize_with = "to_option_lowercase")]
+    #[serde(default)]
     pub email: Option<String>,
     #[schema(example = "Johndoe123@", required = true)]
     #[validate(

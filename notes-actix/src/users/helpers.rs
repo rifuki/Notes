@@ -8,8 +8,12 @@ use actix_web::{
 use chrono::Duration as ChronoDuration;
 use once_cell::sync::Lazy;
 use serde_json::Value as JsonValue;
+use sqlx::query as SqlxQuery;
 
-use crate::errors::AppErrorBuilder;
+use crate::{
+    errors::{AppError, AppErrorBuilder},
+    types::DbPool,
+};
 
 pub const CHRONO_ACCESS_EXPIRED: Lazy<ChronoDuration> = Lazy::new(|| {
     let access_token_expired = env::var("TOKEN_DURATION_ACCESS")
@@ -44,4 +48,32 @@ pub fn purge_expired_refresh_token_cookie(cookie_name: &str, message: &str) -> H
     HttpResponse::build(err_status_code)
         .cookie(boo_cookie)
         .json(response_body)
+}
+
+pub async fn is_username_taken(username: &str, db_pool: &DbPool) -> Result<(), AppError> {
+    let is_username_taken = SqlxQuery("SELECT 1 FROM users WHERE username = $1;")
+        .bind(username)
+        .fetch_optional(db_pool)
+        .await
+        .map_err(|err| {
+            AppErrorBuilder::new(
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                String::from("Failed to check if username is taken."),
+                Some(err.to_string()),
+            )
+            .internal_server_error()
+        })?
+        .is_some();
+
+    if is_username_taken {
+        return Err(AppErrorBuilder::<bool>::new(
+            StatusCode::CONFLICT.as_u16(),
+            String::from("Username is taken."),
+            None,
+        )
+        .conflict()
+        .into());
+    }
+
+    Ok(())
 }
