@@ -7,6 +7,7 @@ use validator::Validate;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
+    jwt::{validate_user_access_right, JwtAuth},
     notes::{
         models::{Notes, NotesBuilder},
         types::{
@@ -140,6 +141,9 @@ pub async fn get_all_notes(
 ) -> Result<HttpResponse, AppError> {
     let db_pool = &app_state.get_ref().db_pool;
 
+    // Handle unauthorized attempts to get_all_user data and retrieve the user if it exists.
+    // let stored_user = validate_user_access_right(&jwt_auth, db_pool, user_id).await?;
+
     let sql_query = format!(
         "SELECT * FROM notes WHERE 1=1 {} ORDER BY updated_at {} LIMIT $2 OFFSET $3;",
         if let Some(query_search) = &qp.search {
@@ -195,7 +199,7 @@ pub async fn get_all_notes(
     //     created_at: i64,
     //     updated_at: i64
     // }
-    
+
     // let new_notes = query_result.iter().map(|note| NewNotes {
     //     created_at: note.created_at.timestamp(),
     //     updated_at: note.updated_at.timestamp(),
@@ -256,6 +260,7 @@ pub async fn get_all_notes(
     )
 )]
 pub async fn create_note(
+    jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
     json_request: web::Json<NotesBuilder>,
 ) -> Result<HttpResponse, AppError> {
@@ -263,12 +268,14 @@ pub async fn create_note(
     if let Err(payload) = payload.validate() {
         return Err(payload.into());
     }
-    let db_pool = &app_state.get_ref().db_pool;
 
-    let query_result =
-        SqlxQueryAs::<_, Notes>("INSERT INTO notes (title, body) VALUES ($1, $2) RETURNING *")
+    let auth_id = jwt_auth.id;
+    let db_pool = &app_state.get_ref().db_pool;
+    let stored_note =
+        SqlxQueryAs::<_, Notes>("INSERT INTO notes (title, body, user_id) VALUES ($1, $2, $3) RETURNING *")
             .bind(payload.title)
             .bind(payload.body)
+            .bind(auth_id)
             .fetch_one(db_pool)
             .await?;
 
@@ -276,7 +283,7 @@ pub async fn create_note(
     let response_body = json!({
         "code": status_code.as_u16(),
         "message": "Note created successfully.",
-        "note": query_result
+        "note": stored_note
     });
     Ok(HttpResponse::build(status_code).json(response_body))
 }

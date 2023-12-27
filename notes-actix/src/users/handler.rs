@@ -236,7 +236,7 @@ pub async fn auth_login(
         .internal_server_error()
     })?;
 
-    // Final http response and giving a cookie 🍪🥰.
+    // Constructs the response body to be sent back after a successful giving cookie update. 🍪🥰.
     let status_code = StatusCode::OK;
     let response_body = json!({
         "code": status_code.as_u16(),
@@ -426,7 +426,7 @@ pub async fn auth_refresh(
         .internal_server_error()
     })?;
 
-    // Final http response.
+    // Constructs the response body to be sent back after a successful refreshed token. 🔥
     let status_code = StatusCode::OK;
     let response_body = json!({
         "code": status_code.as_u16(),
@@ -576,7 +576,8 @@ pub async fn auth_logout(
         "username": stored_user.username,
         "refresh_token": stored_user.refresh_token
     });
-    // Final http response and burn a cookie🔥🍪.
+
+    // Constructs the response body to be sent back after a successful burn a cookie. 🔥🍪.
     let status_code = StatusCode::OK;
     let response_body = json!({
         "code": status_code.as_u16(),
@@ -590,7 +591,6 @@ pub async fn auth_logout(
         .path("/")
         .expires(CookieTime::OffsetDateTime::now_utc())
         .finish();
-
     Ok(HttpResponse::build(status_code)
         .cookie(boo_cookie)
         .json(response_body))
@@ -755,6 +755,7 @@ pub async fn auth_register(
     .fetch_one(db_pool)
     .await?;
 
+    // Constructs the response body to be sent back after a successful stored user. 🔥
     let status_code = StatusCode::CREATED;
     let response_body = json!({
         "code": status_code.as_u16(),
@@ -891,6 +892,7 @@ pub async fn get_all_users(
             .internal_server_error()
         })?;
 
+    // Constructs the response body to be sent back after a successful get all stored users. 🔥
     let status_code = StatusCode::OK;
     let response_body = json!({
         "code": status_code.as_u16(),
@@ -998,10 +1000,10 @@ pub async fn get_user(
     let user_id = pp.into_inner().id;
     let db_pool = &app_state.get_ref().db_pool;
 
-    // Handle unauthorized attempts to update user data and retrieve the user if it exists.
+    // Handle unauthorized attempts to get user data and retrieve the user if it exists.
     let stored_user = validate_user_access_right(&jwt_auth, db_pool, user_id).await?;
 
-    // Final response🔥.
+    // Constructs the response body to be sent back after a successful get searched user. 🔥
     let status_code = StatusCode::OK;
     let response_body = json!({
         "code": status_code.as_u16(),
@@ -1331,7 +1333,7 @@ pub async fn delete_user(
     let user_id = pp.into_inner().id;
     let db_pool = &app_state.get_ref().db_pool;
 
-    // Handle unauthorized attempts to update user data and retrieve the user if it exists.
+    // Handle unauthorized attempts to delete user data and retrieve the user if it exists.
     let _stored_user = validate_user_access_right(&jwt_auth, db_pool, user_id).await?;
 
     // Delete the user from the database by ID and retrieve the deleted user.
@@ -1356,7 +1358,7 @@ pub async fn delete_user(
             .not_found()
         })?;
 
-    // Constructs the response body to be seVnt back after a successful user update. 🔥
+    // Constructs the response body to be seVnt back after a successful user delete. 🔥
     let status_code = StatusCode::OK;
     let response_body = json!({
         "code": status_code.as_u16(),
