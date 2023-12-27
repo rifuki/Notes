@@ -6,7 +6,7 @@ use sqlx::FromRow;
 use utoipa::ToSchema;
 use validator::{Validate, ValidationError};
 
-#[derive(FromRow, Serialize, Clone, ToSchema)]
+#[derive(FromRow, Serialize, Clone, ToSchema, Default)]
 pub struct User {
     #[schema(example = "1")]
     pub id: i32,
@@ -208,12 +208,13 @@ pub struct AdminBuilder {
     ))]
     #[serde(rename = "confirmPassword")]
     pub confirm_password: String,
+    #[schema(example = "super_secret_key", required = true)]
     #[serde(default, rename = "secretKey")]
     pub secret_key: String,
 }
 
 lazy_static! {
-    static ref RE_USERNAME: Regex = Regex::new(r"^[0-9a-zA-Z]{1,}$").unwrap();
+    static ref RE_USERNAME: Regex = Regex::new(r"^[0-9a-zA-Z_]{1,}$").unwrap();
     static ref RE_PASSWORD: Regex = Regex::new(r"^.*?[!@#$%^&*?_+=~|.,:;(){}\[\]<>].*$").unwrap();
 }
 
@@ -267,19 +268,14 @@ fn validate_password(password: &str) -> Result<(), ValidationError> {
 }
 
 fn validate_email(email: &str) -> Result<(), ValidationError> {
-    let valid_domains = ["gmail", "outlook", "icloud", "yahoo", "mail", "aol"];
-
-    if email == "null" {
+    if email.eq("null") {
         return Ok(());
     }
 
+    let valid_domains = ["gmail", "outlook", "icloud", "yahoo", "mail", "aol"];
+
     let email_parts = email.split("@").collect::<Vec<&str>>();
     if email_parts.len() != 2 {
-        // return Err(ValidationError {
-        //     code: Cow::Borrowed("email_address"),
-        //     message: Some(Cow::Borrowed("Invalid email format.")),
-        //     params: vec![(Cow::Borrowed(""))], /* <- still error */
-        // });
         return Err(ValidationError::new("Invalid email format."));
     }
 

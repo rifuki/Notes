@@ -20,8 +20,8 @@ use validator::Validate;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
-    // jwt::JwtAuth,
-    types::{AppState, Claims},
+    jwt::JwtAuth,
+    types::{AppState, Claims, UserRole},
     users::{
         helpers::{
             purge_expired_refresh_token_cookie, CHRONO_ACCESS_EXPIRED, CHRONO_REFRESH_EXPIRED,
@@ -32,7 +32,7 @@ use crate::{
     utils::get_current_utc_timestamp,
 };
 
-use super::helpers::is_username_taken;
+use super::helpers::{hashing_password, is_username_taken, validate_user_access_right};
 
 /// Authenticates user credentials and generates access tokens for accessing protected routes.
 ///
@@ -132,7 +132,7 @@ pub async fn auth_login(
         .ok_or_else(|| {
             AppErrorBuilder::<bool>::new(
                 StatusCode::NOT_FOUND.as_u16(),
-                String::from("Invalid username or password. Please try again."),
+                String::from("Invalid username or password. Please try again. 1"),
                 None,
             )
             .unauthorized()
@@ -146,7 +146,7 @@ pub async fn auth_login(
         .map_err(|_| {
             AppErrorBuilder::<bool>::new(
                 StatusCode::UNAUTHORIZED.as_u16(),
-                format!("Invalid username or password. Please try again."),
+                format!("Invalid username or password. Please try again. 2"),
                 None,
             )
             .unauthorized()
@@ -295,12 +295,27 @@ pub async fn auth_login(
                 }
             })
         ),
-        (status = 401, description = "Unauthorized - Session expiration or invalid refresh token.", body = isize, content_type = "application/json", 
-            example = json!({
-                "code": 401,
-                "message": "Your session has expired. Please log in again."
-            })
-        ),
+        (status = 401, description = "Unauthorized - Session expiration or invalid refresh token.", body = isize, content_type = "application/json", examples(
+            ("Not authorized" = (
+                value = json!({
+                    "code": 401,
+                    "message": "You're not authorized. Please log in again."
+                })
+            )),
+            ("Token expired" = (
+                value = json!({
+                    "code": 401,
+                    "message": "Your session has expired. Please log in again."
+                })
+            )),
+            ("Invalid token" = (
+                value = json!({
+                    "code": 401,
+                    "details": "Invalid token",
+                    "message": "Your acess token is broken. Please log in again."
+                })
+            ))
+        )),
         (status = 500, description = "Internal Server Error - Failed to process the request due to an unexpected server error.")
     )
 )]
@@ -359,6 +374,7 @@ pub async fn auth_refresh(
         .fetch_optional(db_pool)
         .await
         .map_err(|err| {
+            log::error!("Error getting stored refresh_token: {}", err);
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 String::from("Error fetching stored user."),
@@ -385,6 +401,7 @@ pub async fn auth_refresh(
             .naive_utc()
             .checked_add_signed(*CHRONO_ACCESS_EXPIRED)
             .ok_or_else(|| {
+                log::error!("Failed to calculate access token expiration.");
                 AppErrorBuilder::<bool>::new(
                     StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                     String::from("Failed to calculate refresh token expiration."),
@@ -401,6 +418,7 @@ pub async fn auth_refresh(
         &EncodingKey::from_secret(&secret_key_access.as_ref()),
     )
     .map_err(|e| {
+        log::error!("Failed to generate access token: {}", e);
         AppErrorBuilder::new(
             StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             String::from("Failed to encode access token."),
@@ -525,6 +543,7 @@ pub async fn auth_logout(
         )
         .internal_server_error()
     })?;
+
     // If refresh token in db is not found, return error 🚮🍪.
     if let None = set_refresh_token_null {
         return Ok(purge_expired_refresh_token_cookie(
@@ -746,7 +765,7 @@ pub async fn auth_register(
     Ok(HttpResponse::build(status_code).json(response_body))
 }
 
-/// Handles GET requests to retrieve all users.
+/// Handles GET requests to retrieve all users (only admin).
 ///
 /// # Arguments
 ///
@@ -811,6 +830,33 @@ pub async fn auth_register(
                 })
             ))
         )),
+        (status = 401, description = "Unauthorized - Access denied due to failed authentication validation or invalid credentials.", body = isize, content_type = "application/json", examples (
+            ("Not yet authorized" = (
+                value = json!({
+                    "code": 403,
+                    "message": "You're not authorized to access this endpoint."
+                })
+            )),
+            ("Token expired" = (
+                value = json!({
+                    "code": 401,
+                    "message": "Your Access token has expired. Please refresh your access token or log in again. 2"
+                })
+            )),
+            ("Invalid token" = (
+                value = json!({
+                    "code": 401,
+                    "details": "Invalid token",
+                    "message": "Your acess token is broken. Please log in again."
+                })
+            ))
+        )),
+        (status = 403, description = "Forbidden - Access to this endpoint is not allowed.", body = isize, content_type = "application/json",
+            example = json!({
+                "code": 403,
+                "message": "You're not allowed to access this endpoint."
+            })
+        ),
         (status = 500, description = "Internal Failed to process the request due to an unexpected server error.")
     ),
     security(
@@ -818,12 +864,23 @@ pub async fn auth_register(
     )
 )]
 pub async fn get_all_users(
-    // jwt_auth: JwtAuth,
+    jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
 ) -> Result<HttpResponse, AppError> {
+    // Handle if not admin users.
+    let auth_role = &jwt_auth.role;
+    if auth_role != &UserRole::Admin.to_string() {
+        return Err(AppErrorBuilder::<bool>::new(
+            StatusCode::FORBIDDEN.as_u16(),
+            String::from("You're not allowed to access this endpoint."),
+            None,
+        )
+        .forbidden());
+    }
+
     let db_pool = &app_state.get_ref().db_pool;
 
-    let query_result = SqlxQueryAs::<_, User>("SELECT * FROM users")
+    let query_result = SqlxQueryAs::<_, User>("SELECT * FROM users ORDER BY id DESC;")
         .fetch_all(db_pool)
         .await
         .map_err(|err| {
@@ -892,8 +949,35 @@ pub async fn get_all_users(
                 }
             })
         ),
-        (status = 400, description = "Invalid request input.", body = String, content_type = "text/plain",
+        (status = 400, description = "Invalid provider path.", body = String, content_type = "text/plain",
             example = json!(r#"can not parse "satu" to a i32"#)
+        ),
+        (status = 401, description = "Unauthorized - Access denied due to failed authentication validation or invalid credentials.", body = isize, content_type = "application/json", examples (
+            ("Not yet authorized" = (
+                value = json!({
+                    "code": 401,
+                    "message": "You're not authorized to access this endpoint."
+                })
+            )),
+            ("Token expired" = (
+                value = json!({
+                    "code": 401,
+                    "message": "Your Access token has expired. Please refresh your access token or log in again. 2"
+                })
+            )),
+            ("Invalid token" = (
+                value = json!({
+                    "code": 401,
+                    "details": "Invalid token",
+                    "message": "Your acess token is broken. Please log in again."
+                })
+            ))
+        )),
+        (status = 403, description = "Forbidden - Access to this endpoint is not allowed.", body = isize, content_type = "application/json",
+            example = json!({
+                "code": 403,
+                "message": "You're not allowed to access this endpoint."
+            })
         ),
         (status = 404, description = "User not found.", body = isize, content_type = "application/json",
             example = json!({
@@ -902,44 +986,30 @@ pub async fn get_all_users(
             })
         ),
         (status = 500, description = "Internal Failed to process the request due to an unexpected server error.")
+    ),
+    security(
+        ("bearer_auth"= [])
     )
 )]
 pub async fn get_user(
+    jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
     pp: web::Path<GetUserPathParams>,
 ) -> Result<HttpResponse, AppError> {
-    let db_pool = &app_state.get_ref().db_pool;
     let user_id = pp.into_inner().id;
+    let db_pool = &app_state.get_ref().db_pool;
 
-    let query_result = SqlxQueryAs::<_, User>("SELECT * FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(db_pool)
-        .await
-        .map_err(|err| {
-            AppErrorBuilder::new(
-                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                format!("Failed to retrieve user with id: '{}'", user_id),
-                Some(err.to_string()),
-            )
-            .internal_server_error()
-        })?;
+    // Handle unauthorized attempts to update user data and retrieve the user if it exists.
+    let stored_user = validate_user_access_right(&jwt_auth, db_pool, user_id).await?;
 
-    if let Some(result) = query_result {
-        let status_code = StatusCode::OK;
-        let response_body = json!({
-            "code": status_code.as_u16(),
-            "message": "User retrieved successfully.",
-            "user": result
-        });
-        Ok(HttpResponse::build(status_code).json(response_body))
-    } else {
-        Err(AppErrorBuilder::<bool>::new(
-            StatusCode::NOT_FOUND.as_u16(),
-            format!("User with id: '{}' not found", user_id),
-            None,
-        )
-        .not_found())
-    }
+    // Final response🔥.
+    let status_code = StatusCode::OK;
+    let response_body = json!({
+        "code": status_code.as_u16(),
+        "message": "User retrieved successfully.",
+        "user": stored_user
+    });
+    Ok(HttpResponse::build(status_code).json(response_body))
 }
 
 /// Handles PUT requests to update user details based on the provided ID.
@@ -995,6 +1065,36 @@ pub async fn get_user(
                 }
             })
         ),
+        (status = 400, description = "Invalid provider path.", body = String, content_type = "text/plain",
+            example = json!(r#"can not parse "satu" to a i32"#)
+        ),
+        (status = 401, description = "Unauthorized - Access denied due to failed authentication validation or invalid credentials.", body = isize, content_type = "application/json", examples (
+            ("Not yet authorized" = (
+                value = json!({
+                    "code": 401,
+                    "message": "You're not authorized to access this endpoint."
+                })
+            )),
+            ("Token expired" = (
+                value = json!({
+                    "code": 401,
+                    "message": "Your Access token has expired. Please refresh your access token or log in again. 2"
+                })
+            )),
+            ("Invalid token" = (
+                value = json!({
+                    "code": 401,
+                    "details": "Invalid token",
+                    "message": "Your acess token is broken. Please log in again."
+                })
+            ))
+        )),
+        (status = 403, description = "Forbidden - Access to this endpoint is not allowed.", body = isize, content_type = "application/json",
+            example = json!({
+                "code": 403,
+                "message": "You're not allowed to access this endpoint."
+            })
+        ),
         (status = 404, description = "Not Found - User not found with the specified ID.", body = isize, content_type = "application/json",
             example = json!({
                 "code": 500,
@@ -1016,46 +1116,30 @@ pub async fn get_user(
             ))
         )),
         (status = 500, description = "Internal Server Error - Failed to process the request due to an unexpected server error.")
+    ),
+    security(
+        ("bearer_auth"= [])
     )
 )]
 pub async fn update_user(
+    jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
     pp: web::Path<UpdateUserPathParams>,
     json_request: web::Json<UserUpdatePayload>,
 ) -> Result<HttpResponse, AppError> {
     let user_id = pp.into_inner().id;
+    let db_pool = &app_state.get_ref().db_pool;
+
+    // Handle unauthorized attempts to update user data and retrieve the user if it exists.
+    let stored_user = validate_user_access_right(&jwt_auth, db_pool, user_id).await?;
 
     let payload = json_request.into_inner();
-    // Validate user input entity.
+    // Check the validity of the user input entity before further processing.
     if let Err(err) = payload.validate() {
         return Err(err.into());
     }
 
-    let db_pool = &app_state.get_ref().db_pool;
-
-    // Check is user update exists.
-    let stored_user = SqlxQueryAs::<_, User>("SELECT * FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(db_pool)
-        .await
-        .map_err(|err| {
-            AppErrorBuilder::new(
-                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                format!("Failed to retrieve user with id: '{}'.", user_id),
-                Some(err.to_string()),
-            )
-            .internal_server_error()
-        })?
-        .ok_or_else(|| {
-            AppErrorBuilder::<bool>::new(
-                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                format!("User with id: '{}' not found.", user_id),
-                None,
-            )
-            .not_found()
-        })?;
-
-    // Check username availability.
+    // Verifying if the desired new username is available or already in use by another user.
     if let Some(ref new_username) = payload.username.clone() {
         let is_username_taken = SqlxQuery("SELECT 1 FROM users WHERE username = $1")
             .bind(new_username)
@@ -1074,7 +1158,7 @@ pub async fn update_user(
             .conflict());
         }
     }
-    // Check email availability.
+    // Verifying if the desired new email is available or already associated with another account.
     if let Some(ref new_email) = payload.email.clone() {
         let is_email_associated = SqlxQuery("SELECT 1 FROM users WHERE email = $1")
             .bind(new_email)
@@ -1094,35 +1178,22 @@ pub async fn update_user(
            .conflict());
         }
     }
-    // Hashing new provided password or return old / stored password.
+    // Encrypting the provided new password or returning the previously stored old password.
     let password = if let Some(ref password) = payload.password {
-        let salt_string = SaltString::generate(OsRng);
-        let argon2 = Argon2::default();
-        let hashed_new_password = argon2
-            .hash_password(password.as_ref(), &salt_string)
-            .map_err(|err| {
-                AppErrorBuilder::new(
-                    StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                    format!("Failed to hash password."),
-                    Some(err.to_string()),
-                )
-                .internal_server_error()
-            })?
-            .to_string();
-        hashed_new_password
+        hashing_password(password.as_ref())?
     } else {
         stored_user.password
     };
+    // Retrieves username paylaod if it was provided or use previously stored old username.
     let username = payload.username.unwrap_or(stored_user.username);
-    // let email = payload
-    //     .email
-    //     .unwrap_or(stored_user.email.unwrap_or_default()); /* <- potential buggy */
+    // Handle the case of a provided new_email email address is None and 'null'.
     let email = match payload.email.as_deref() {
         Some("null") => None,
         Some(email) => Some(email),
         None => stored_user.email.as_deref().or(Some("null")),
     };
 
+    // Construct SQL query based on email presence.
     let sql_query = if email == Some("null") {
         SqlxQueryAs::<_, User>(
             "UPDATE users SET username = $1, password = $2 WHERE id = $3 RETURNING *;",
@@ -1140,31 +1211,36 @@ pub async fn update_user(
         .bind(user_id)
     };
 
-    let query_result = sql_query.fetch_optional(db_pool).await.map_err(|err| {
-        AppErrorBuilder::new(
-            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            format!("Failed to update user with id: '{}'", user_id),
-            Some(err.to_string()),
-        )
-        .internal_server_error()
-    })?;
+    // Execution of the previously constructed SQL query and handling its result.
+    let updated_user = sql_query
+        .fetch_optional(db_pool)
+        .await
+        .map_err(|err| {
+            log::error!("Failed to execute update_user query: {:?}", err);
+            AppErrorBuilder::new(
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                format!("Failed to update user with id: '{}'", user_id),
+                Some(err.to_string()),
+            )
+            .internal_server_error()
+        })?
+        .ok_or_else(|| {
+            AppErrorBuilder::<bool>::new(
+                StatusCode::NOT_FOUND.as_u16(),
+                format!("User with id: '{}' not found.", user_id),
+                None,
+            )
+            .not_found()
+        })?;
 
-    if let Some(result) = query_result {
-        let status_code = StatusCode::OK;
-        let response_body = json!({
-            "code": status_code.as_u16(),
-            "message": "User updated successfully.",
-            "user": result
-        });
-        Ok(HttpResponse::build(status_code).json(response_body))
-    } else {
-        Err(AppErrorBuilder::<bool>::new(
-            StatusCode::NOT_FOUND.as_u16(),
-            format!("User with id: '{}' not found.", user_id),
-            None,
-        )
-        .not_found())
-    }
+    // Constructs the response body to be sent back after a successful user update. 🔥
+    let status_code = StatusCode::OK;
+    let response_body = json!({
+        "code": status_code.as_u16(),
+        "message": "User updated successfully.",
+        "user": updated_user
+    });
+    Ok(HttpResponse::build(status_code).json(response_body))
 }
 
 /// Deletes a user by their ID.
@@ -1206,24 +1282,40 @@ pub async fn update_user(
                 }
             })
         ),
-        (status = 403, description = "Forbidden - Access to this endpoint is not allowed.", body = isize, content_type = "application/json", examples(
+        (status = 400, description = "Invalid provider path.", body = String, content_type = "text/plain",
+            example = json!(r#"can not parse "satu" to a i32"#)
+        ),
+        (status = 401, description = "Unauthorized - Access denied due to failed authentication validation or invalid credentials.", body = isize, content_type = "application/json", examples (
             ("Not yet authorized" = (
                 value = json!({
-                    "code": 403,
+                    "code": 401,
                     "message": "You're not authorized to access this endpoint."
                 })
             )),
-            ("Not allowed" = (
+            ("Token expired" = (
                 value = json!({
-                    "code": 403,
-                    "message": "You're not allowed to access this."
+                    "code": 401,
+                    "message": "Your Access token has expired. Please refresh your access token or log in again. 2"
+                })
+            )),
+            ("Invalid token" = (
+                value = json!({
+                    "code": 401,
+                    "details": "Invalid token",
+                    "message": "Your acess token is broken. Please log in again."
                 })
             ))
         )),
+        (status = 403, description = "Forbidden - Access to this endpoint is not allowed.", body = isize, content_type = "application/json",
+            example = json!({
+                "code": 403,
+                "message": "You're not allowed to access this endpoint."
+            })
+        ),
         (status = 404, description = "User not found.", body = isize, content_type = "application/json",
             example = json!({
                 "code": 404,
-                "message": "User with id: '39' not found"
+                "message": "User with id: '1' not found"
             })
         ),
         (status = 500, description = "Internal Server Error - Failed to process the request due to an unexpected server error.")
@@ -1233,23 +1325,18 @@ pub async fn update_user(
     )
 )]
 pub async fn delete_user(
-    // jwt_auth: JwtAuth,
+    jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
     pp: web::Path<DeleteUserPathParams>,
 ) -> Result<HttpResponse, AppError> {
     let user_id = pp.into_inner().id;
-    // let auth_role = jwt_auth.role;
-    // if auth_role != "admin" {
-    //     return Err(AppErrorBuilder::<bool>::new(
-    //         StatusCode::FORBIDDEN.as_u16(),
-    //         String::from("You're not allowed to access this."),
-    //         None,
-    //     )
-    //     .forbidden());
-    // }
     let db_pool = &app_state.get_ref().db_pool;
 
-    let query_result = SqlxQueryAs::<_, User>("DELETE FROM users WHERE id = $1 RETURNING *;")
+    // Handle unauthorized attempts to update user data and retrieve the user if it exists.
+    let _stored_user = validate_user_access_right(&jwt_auth, db_pool, user_id).await?;
+
+    // Delete the user from the database by ID and retrieve the deleted user.
+    let deleted_user = SqlxQueryAs::<_, User>("DELETE FROM users WHERE id = $1 RETURNING *;")
         .bind(user_id)
         .fetch_optional(db_pool)
         .await
@@ -1260,22 +1347,22 @@ pub async fn delete_user(
                 Some(err.to_string()),
             )
             .internal_server_error()
+        })?
+        .ok_or_else(|| {
+            AppErrorBuilder::<bool>::new(
+                StatusCode::NOT_FOUND.as_u16(),
+                format!("User with id: '{}' not found", user_id),
+                None,
+            )
+            .not_found()
         })?;
 
-    if let Some(result) = query_result {
-        let status_code = StatusCode::OK;
-        let response_body = json!({
-            "code": status_code.as_u16(),
-            "message": "User deleted successfully",
-            "user": result
-        });
-        Ok(HttpResponse::build(status_code).json(response_body))
-    } else {
-        Err(AppErrorBuilder::<bool>::new(
-            StatusCode::NOT_FOUND.as_u16(),
-            format!("User with id: '{}' not found", user_id),
-            None,
-        )
-        .not_found())
-    }
+    // Constructs the response body to be seVnt back after a successful user update. 🔥
+    let status_code = StatusCode::OK;
+    let response_body = json!({
+        "code": status_code.as_u16(),
+        "message": "User deleted successfully",
+        "user": deleted_user
+    });
+    Ok(HttpResponse::build(status_code).json(response_body))
 }

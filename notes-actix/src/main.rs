@@ -18,13 +18,16 @@ use notes_actix::{
     ping::handler::{__path_ping_service, ping_service},
     types::AppState,
     users::{
-        admin::register_admin,
+        admin::{__path_register_admin, register_admin},
         handler::{
             __path_auth_login, __path_auth_logout, __path_auth_refresh, __path_auth_register,
             __path_delete_user, __path_get_all_users, __path_get_user, __path_update_user,
             auth_login, auth_logout, auth_refresh, auth_register,
         },
-        models::{User, UserClaims, UserLoginPayload, UserRegisterPayload, UserUpdatePayload},
+        models::{
+            AdminBuilder, User, UserClaims, UserLoginPayload, UserRegisterPayload,
+            UserUpdatePayload,
+        },
         routes::scoped_users,
     },
     utils::establish_connection,
@@ -88,8 +91,8 @@ async fn main() -> std::io::Result<()> {
                 url = "https://opensource.org/licenses/MIT"
             )
         ),
-        paths(get_all_notes, create_note, get_note, update_note, delete_note, auth_login, auth_logout, auth_refresh, auth_register, get_all_users, get_user, update_user, delete_user, ping_service),
-        components(schemas(Notes, NotesBuilder, User, UserClaims, UserLoginPayload, UserRegisterPayload, UserUpdatePayload)),
+        paths(get_all_notes, create_note, get_note, update_note, delete_note, auth_login, auth_logout, auth_refresh, auth_register, get_all_users, get_user, update_user, delete_user, ping_service, register_admin),
+        components(schemas(Notes, NotesBuilder, User, UserClaims, UserLoginPayload, UserRegisterPayload, UserUpdatePayload, AdminBuilder)),
         modifiers(&SecurityAddon)
     )]
     struct ApiDoc;

@@ -31,13 +31,12 @@ impl FromRequest for JwtAuth {
         let auth_header = req.headers().get(HttpHeader::AUTHORIZATION);
         if auth_header.is_none() {
             return ready(Err(AppErrorBuilder::<bool>::new(
-                StatusCode::FORBIDDEN.as_u16(),
+                StatusCode::UNAUTHORIZED.as_u16(),
                 // String::from("Authorization header not found."),
                 String::from("You're not authorized to access this endpoint."),
                 None,
             )
-            // .unauthorized()));
-            .forbidden()));
+            .unauthorized()));
         }
         let auth_header_value = auth_header.map_or("", |hv| hv.to_str().unwrap_or_default());
         if !auth_header_value.starts_with("Bearer ") {
@@ -71,7 +70,7 @@ impl FromRequest for JwtAuth {
                     return ready(Err(AppErrorBuilder::<bool>::new(
                         StatusCode::UNAUTHORIZED.as_u16(),
                         String::from(
-                            "Your Access token has expired. Please refresh your access token or log in again. 1",
+                            "Your Access token has expired. Please refresh your access token or log in again. 2",
                         ),
                         None,
                     )
@@ -93,7 +92,7 @@ impl FromRequest for JwtAuth {
             return ready(Err(AppErrorBuilder::<bool>::new(
                 StatusCode::UNAUTHORIZED.as_u16(),
                 String::from(
-                    "Your Access token has expired. Please refresh your access token or log in again. 2",
+                    "Your Access token has expired. Please refresh your access token or log in again. 1",
                 ),
                 None,
             )
