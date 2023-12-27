@@ -4,6 +4,7 @@ use actix_web::{
     http::header,
     HttpResponse,
 };
+use chrono::Utc;
 use serde_json::json;
 
 /// Health Check - Ping Service
@@ -82,4 +83,33 @@ pub async fn ping_service() -> HttpResponse {
         .insert_header((header::ACCEPT_LANGUAGE, "en-US"))
         .cookie(yay_cookie)
         .json(response_body)
+
+}
+
+/// Handler to retrieve the server time.
+///
+/// Retrieves the current server time in UTC format.
+///
+/// # Returns
+///
+/// Returns a JSON response containing the current server time.
+#[utoipa::path(
+    get,
+    tag = "HealthCheck",
+    path = "/time",
+    responses(
+        (status = 200, description = "OK - Server time.", body = String, content_type = "application/json",
+            example = json!({
+                "server_time": "2023-12-27 12:55:25.791472 UTC"
+            })
+        )
+    )
+)]
+#[get("/time")]
+pub async fn server_time() -> HttpResponse {
+    HttpResponse::Ok()
+      .insert_header((header::CONTENT_TYPE, "application/json"))
+      .json(json!({
+            "server_time": Utc::now().to_string()
+        }))
 }

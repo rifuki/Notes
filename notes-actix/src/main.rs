@@ -15,7 +15,7 @@ use notes_actix::{
         models::{Notes, NotesBuilder},
         routes::scoped_notes,
     },
-    ping::handler::{__path_ping_service, ping_service},
+    ping::handler::{__path_ping_service, __path_server_time, ping_service, server_time},
     types::AppState,
     users::{
         admin::{__path_register_admin, register_admin},
@@ -91,7 +91,7 @@ async fn main() -> std::io::Result<()> {
                 url = "https://opensource.org/licenses/MIT"
             )
         ),
-        paths(get_all_notes, create_note, get_note, update_note, delete_note, auth_login, auth_logout, auth_refresh, auth_register, get_all_users, get_user, update_user, delete_user, ping_service, register_admin),
+        paths(get_all_notes, create_note, get_note, update_note, delete_note, auth_login, auth_logout, auth_refresh, auth_register, get_all_users, get_user, update_user, delete_user, ping_service, register_admin, server_time),
         components(schemas(Notes, NotesBuilder, User, UserClaims, UserLoginPayload, UserRegisterPayload, UserUpdatePayload, AdminBuilder)),
         modifiers(&SecurityAddon)
     )]
@@ -128,6 +128,7 @@ async fn main() -> std::io::Result<()> {
             )
             .service(index)
             .service(ping_service)
+            .service(server_time)
             .service(
                 web::scope("/api").wrap(NormalizePath::trim()).service(
                     web::scope("/v1")
