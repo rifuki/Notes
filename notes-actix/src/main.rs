@@ -1,6 +1,11 @@
 use std::env;
 
-use actix_web::{get, middleware::NormalizePath, web, App, HttpResponse, HttpServer};
+use actix_cors::Cors;
+use actix_web::{
+    get,
+    middleware::{Logger, NormalizePath},
+    web, App, HttpResponse, HttpServer,
+};
 use notes_actix::{
     notes::{
         handler::{
@@ -13,13 +18,14 @@ use notes_actix::{
     ping::handler::{__path_ping_service, ping_service},
     types::AppState,
     users::{
+        admin::register_admin,
         handler::{
             __path_auth_login, __path_auth_logout, __path_auth_refresh, __path_auth_register,
             __path_delete_user, __path_get_all_users, __path_get_user, __path_update_user,
             auth_login, auth_logout, auth_refresh, auth_register,
         },
         models::{User, UserClaims, UserLoginPayload, UserRegisterPayload, UserUpdatePayload},
-        routes::scoped_users, admin::register_admin,
+        routes::scoped_users,
     },
     utils::establish_connection,
 };
@@ -31,6 +37,10 @@ use utoipa_swagger_ui::SwaggerUi;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    env::set_var("RUST_LOG", "INFO");
+    env::set_var("RUST_BACKTRACE", "1");
+    env_logger::init();
+
     let current_dir = env::current_dir().unwrap();
     let parent_dir = current_dir.parent().unwrap();
     let parent_env_path = parent_dir.join(".env");
@@ -101,8 +111,15 @@ async fn main() -> std::io::Result<()> {
     }
 
     HttpServer::new(move || {
+        let cors = Cors::default()
+            .allow_any_header()
+            .allow_any_method()
+            .allow_any_origin();
+
         App::new()
             .app_data(web::Data::new(app_state.clone()))
+            .wrap(Logger::default())
+            .wrap(cors)
             .service(
                 SwaggerUi::new("/docs/{_:.*}").url("/api-docs/openapi.json", ApiDoc::openapi()),
             )

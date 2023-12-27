@@ -188,6 +188,18 @@ pub async fn get_all_notes(
         }
     };
 
+    // struct NewNotes {
+    //     id: i32,
+    //     title: String,
+    //     body: String,
+    //     created_at: i64,
+    //     updated_at: i64
+    // }
+    
+    // let new_notes = query_result.iter().map(|note| NewNotes {
+    //     created_at: note.created_at.timestamp(),
+    //     updated_at: note.updated_at.timestamp(),
+    // }).collect();
     let response_body = json!({
         "code": status_code.as_u16(),
         "message": response_message,

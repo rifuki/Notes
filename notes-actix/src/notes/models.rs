@@ -13,8 +13,10 @@ pub struct Notes {
     #[schema(example = "This is my body note.")]
     pub body: String,
     #[schema(example = "2023-12-23T23:13:05.151333")]
+    #[serde(rename = "createdAt")]
     pub created_at: NaiveDateTime,
     #[schema(example = "2023-12-23T23:15:05:342034")]
+    #[serde(rename = "updatedAt")]
     pub updated_at: NaiveDateTime,
 }
 
