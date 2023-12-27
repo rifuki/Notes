@@ -1,5 +1,5 @@
 -- Add up migration script here
-CREATE TYPE user_role AS ENUM ('admin', 'user');
+-- CREATE TYPE user_role AS ENUM ('admin', 'user');
 
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL,
