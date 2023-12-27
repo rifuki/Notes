@@ -20,19 +20,18 @@ use validator::Validate;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
-    jwt::JwtAuth,
+    jwt::{validate_user_access_right, JwtAuth},
     types::{AppState, Claims, UserRole},
     users::{
         helpers::{
-            purge_expired_refresh_token_cookie, CHRONO_ACCESS_EXPIRED, CHRONO_REFRESH_EXPIRED,
+            hashing_password, is_username_taken, purge_expired_refresh_token_cookie,
+            CHRONO_ACCESS_EXPIRED, CHRONO_REFRESH_EXPIRED,
         },
         models::{User, UserClaims, UserLoginPayload, UserRegisterPayload, UserUpdatePayload},
         types::{DeleteUserPathParams, GetUserPathParams, UpdateUserPathParams},
     },
     utils::get_current_utc_timestamp,
 };
-
-use super::helpers::{hashing_password, is_username_taken, validate_user_access_right};
 
 /// Authenticates user credentials and generates access tokens for accessing protected routes.
 ///
