@@ -9,9 +9,6 @@ use crate::types::{DbPool, RedisPool};
 pub async fn establish_database_pool(db_url: &str) -> DbPool {
     PgPoolOptions::new()
         .acquire_timeout(Duration::from_secs(15))
-        // .min_connections(5)
-        // .max_connections(5000)
-        // .idle_timeout(Duration::from_secs(15))
         .connect(db_url)
         .await
         .unwrap_or_else(|err| panic!("Failed to establish connection. {}", err))

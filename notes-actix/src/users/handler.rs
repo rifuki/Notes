@@ -1,7 +1,7 @@
 use std::env;
 
 use actix_web::{
-    cookie::{time as CookieTime, Cookie, SameSite},
+    cookie::{time as CookieTime, Cookie},
     http::StatusCode,
     web, HttpRequest, HttpResponse,
 };
@@ -21,7 +21,7 @@ use validator::Validate;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
-    helpers::handle_blacklist_token,
+    helpers::{check_is_https, handle_blacklist_token},
     jwt::{validate_user_access_right, JwtAuth},
     types::{AppState, Claims, RedisKey, UserRole},
     users::{
@@ -254,6 +254,7 @@ pub async fn auth_login(
     })?;
 
     // Constructs the response body to be sent back after a successful giving cookie update. 🍪🥰.
+    let (secure, same_site) = check_is_https();
     let status_code = StatusCode::OK;
     let response_body = json!({
         "code": status_code.as_u16(),
@@ -262,8 +263,8 @@ pub async fn auth_login(
         "accessToken": encoded_access_token,
     });
     let yay_cookie = Cookie::build("refreshToken", &encoded_refresh_token)
-        .secure(false)
-        .same_site(SameSite::Strict)
+        .secure(secure)
+        .same_site(same_site)
         .http_only(true)
         .path("/")
         .finish();
@@ -602,6 +603,7 @@ pub async fn auth_logout(
     });
 
     // Constructs the response body to be sent back after a successful burn a cookie. 🔥🍪.
+    let (secure, same_site) = check_is_https();
     let status_code = StatusCode::OK;
     let response_body = json!({
         "code": status_code.as_u16(),
@@ -609,8 +611,8 @@ pub async fn auth_logout(
         "user": user
     });
     let boo_cookie = Cookie::build("refreshToken", "")
-        .secure(false)
-        .same_site(SameSite::Strict)
+        .secure(secure)
+        .same_site(same_site)
         .http_only(true)
         .path("/")
         .expires(CookieTime::OffsetDateTime::now_utc())

@@ -1,11 +1,7 @@
 use std::env;
 
 use actix_cors::Cors;
-use actix_web::{
-    get,
-    middleware::NormalizePath,
-    web, App, HttpResponse, HttpServer,
-};
+use actix_web::{get, middleware::NormalizePath, web, App, HttpResponse, HttpServer};
 use notes_actix::{
     notes::{
         handler::{
@@ -69,6 +65,11 @@ async fn main() -> std::io::Result<()> {
         .unwrap_or_else(|_| panic!("Env TOKEN_DURATION_REFRESH is not set."))
         .parse::<i64>()
         .expect("Failed to parse TOKEN_DURATION_ACCESS.");
+    env::var("HTTPS")
+        .unwrap_or(String::from("false"))
+        .to_lowercase()
+        .parse::<bool>()
+        .unwrap();
     // End of Checking env variables for forward compatibility.
 
     let redis_port = env::var("REDIS_PORT").expect("Env REDIS_PORT is not set.");

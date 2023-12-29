@@ -1,7 +1,7 @@
 use std::env;
 
 use actix_web::{
-    cookie::{time as CookieTime, Cookie, SameSite},
+    cookie::{time as CookieTime, Cookie},
     http::StatusCode,
     HttpResponse,
 };
@@ -16,6 +16,7 @@ use sqlx::query as SqlxQuery;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
+    helpers::check_is_https,
     types::DbPool,
 };
 
@@ -41,10 +42,12 @@ pub fn purge_expired_refresh_token_cookie(cookie_name: &str, message: &str) -> H
         message: message.to_string(),
         details: None,
     };
+
+    let (secure, same_site) = check_is_https();
     let response_body: JsonValue = app_error_builder.into();
     let boo_cookie = Cookie::build(cookie_name, "")
-        .secure(false)
-        .same_site(SameSite::Strict)
+        .secure(secure)
+        .same_site(same_site)
         .http_only(true)
         .path("/")
         .expires(CookieTime::OffsetDateTime::now_utc())

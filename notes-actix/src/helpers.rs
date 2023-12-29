@@ -1,4 +1,6 @@
-use actix_web::http::StatusCode;
+use std::env;
+
+use actix_web::{cookie::SameSite, http::StatusCode};
 use bb8::PooledConnection;
 use bb8_redis::{redis::AsyncCommands, RedisConnectionManager};
 
@@ -23,4 +25,19 @@ pub async fn handle_blacklist_token(
     }
 
     Ok(())
+}
+
+pub fn check_is_https() -> (bool, SameSite) {
+    let is_https = env::var("HTTPS")
+        .unwrap_or(String::from("false"))
+        .to_lowercase()
+        .parse::<bool>()
+        .unwrap();
+
+    let mut same_site = SameSite::Strict;
+    if is_https {
+        same_site = SameSite::None;
+    }
+
+    (is_https, same_site)
 }

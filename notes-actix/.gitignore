@@ -1,6 +1,4 @@
 /target
 .vscode
-pgadmin
-postgresql
 .env
 .DS_Store

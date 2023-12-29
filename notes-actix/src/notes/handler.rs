@@ -9,15 +9,13 @@ use crate::{
     helpers::handle_blacklist_token,
     jwt::JwtAuth,
     notes::{
-        models::{Note, NoteBuilder, NoteUpdatePayload},
+        models::{Note, NoteBuilder, NoteJoinUser, NoteUpdatePayload},
         types::{
             DeleteNotePathParams, GetAllNotesQueryParams, GetNotePathParams, UpdateNotePathParams,
         },
     },
     types::{AppState, UserRole},
 };
-
-use super::models::NoteJoinUser;
 
 /// This endpoint handles the retrieval of notes.
 ///
@@ -520,7 +518,11 @@ pub async fn get_note(
         .fetch_optional(db_pool)
         .await
         .map_err(|err| {
-            log::error!("[get_user] Failed to retrieve note with id: '{}'. {}", note_id, err);
+            log::error!(
+                "[get_user] Failed to retrieve note with id: '{}'. {}",
+                note_id,
+                err
+            );
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 format!("Failed retrieve note with id: '{}'", note_id),
@@ -680,7 +682,8 @@ pub async fn update_note(
         .map_err(|err| {
             log::error!(
                 "[update_note] Failed to retrieve note with id: '{}'. {}",
-                note_id, err
+                note_id,
+                err
             );
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),

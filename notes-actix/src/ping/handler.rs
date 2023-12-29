@@ -1,5 +1,5 @@
 use actix_web::{
-    cookie::{time::Duration, Cookie, SameSite},
+    cookie::{time::Duration, Cookie},
     get,
     http::{header, StatusCode},
     HttpResponse, web,
@@ -8,7 +8,7 @@ use bb8_redis::redis::AsyncCommands;
 use chrono::Utc;
 use serde_json::json;
 
-use crate::{types::AppState, errors::{AppError, AppErrorBuilder}};
+use crate::{types::AppState, errors::{AppError, AppErrorBuilder}, helpers::check_is_https};
 
 /// Health Check - Ping Service
 ///
@@ -64,19 +64,21 @@ use crate::{types::AppState, errors::{AppError, AppErrorBuilder}};
     
 )]
 #[get("/ping")]
-pub async fn ping_service() -> HttpResponse {
+pub async fn ping_service() -> Result<HttpResponse, AppError> {
+    let (secure, same_site) = check_is_https();
+
     // Constructs the response body to be sent back after a successful ping request. 🔥
     let response_body = json!({
         "message": "pong"
     });
     let yay_cookie = Cookie::build("ping", "yay ".repeat(100))
-        .secure(false)
-        .same_site(SameSite::Strict)
+        .secure(secure)
+        .same_site(same_site)
         .http_only(true)
         .path("/")
         .max_age(Duration::MINUTE)
         .finish();
-    HttpResponse::Ok()
+    Ok(HttpResponse::Ok()
         .insert_header((header::CONTENT_TYPE, "application/json"))
         .insert_header((header::CONTENT_SECURITY_POLICY, "your_policy_here"))
         .insert_header((header::STRICT_TRANSPORT_SECURITY, "max-age=31536000"))
@@ -84,7 +86,7 @@ pub async fn ping_service() -> HttpResponse {
         .insert_header((header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
         .insert_header((header::ACCEPT_LANGUAGE, "en-US"))
         .cookie(yay_cookie)
-        .json(response_body)
+        .json(response_body))
 }
 
 /// Handler to retrieve the server time.
