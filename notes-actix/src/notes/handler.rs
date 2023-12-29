@@ -1,5 +1,4 @@
 use actix_web::{http::StatusCode, web, HttpResponse};
-use chrono::{Duration as ChronoDuration, Utc};
 use serde_json::json;
 use sqlx::query_as as SqlxQueryAs;
 use std::i64::MAX as I64Max;
@@ -7,15 +6,18 @@ use validator::Validate;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
-    jwt::{validate_user_access_right, JwtAuth},
+    helpers::handle_blacklist_token,
+    jwt::JwtAuth,
     notes::{
-        models::{Notes, NotesBuilder},
+        models::{Note, NoteBuilder, NoteUpdatePayload},
         types::{
             DeleteNotePathParams, GetAllNotesQueryParams, GetNotePathParams, UpdateNotePathParams,
         },
     },
-    types::AppState,
+    types::{AppState, UserRole},
 };
+
+use super::models::NoteJoinUser;
 
 /// This endpoint handles the retrieval of notes.
 ///
@@ -43,27 +45,47 @@ use crate::{
     path = "/api/v1/notes",
     params(GetAllNotesQueryParams),
     responses(
-        (status = 200, description = "Succesfully retrieved all notes.", body = Notes, content_type = "application/json", examples(
+        (status = 200, description = "Succesfully retrieved all notes.", body = NoteJoinUser, content_type = "application/json", examples(
             ("List of Notes" = (
                 value = json!({
                     "code": 200,
                     "length": 3,
                     "message": "Succesfully retrieved all notes.",
                     "notes": [
-                        Notes {
-                            id: 1,
-                            title: "My Title".to_string(),
-                            body: "This is my body note.".to_string(),
-                            created_at: Utc::now().naive_local(),
-                            updated_at: Utc::now().naive_local() + ChronoDuration::days(1)
-                        },
-                        Notes {
-                            id: 2,
-                            title: "My Second Title".to_string(),
-                            body: "This is my second body note.".to_string(),
-                            created_at: Utc::now().naive_local(),
-                            updated_at: Utc::now().naive_local() + ChronoDuration::days(1)
-                        },
+                        {
+                            "code": 200,
+                            "length": 3,
+                            "message": "Successfully retrieved all notes.",
+                            "notes": [
+                                {
+                                    "body": "This is my third body note.",
+                                    "createdAt": "2023-12-27T16:54:41.325218",
+                                    "id": 3,
+                                    "title": "My Third Note",
+                                    "updatedAt": "2023-12-27T16:54:41.325218",
+                                    "user_id": 1,
+                                    "username": "john"
+                                },
+                                {
+                                    "body": "This is my second body note.",
+                                    "createdAt": "2023-12-27T16:54:39.222193",
+                                    "id": 2,
+                                    "title": "My Second Note",
+                                    "updatedAt": "2023-12-27T16:54:39.222193",
+                                    "user_id": 1,
+                                    "username": "john"
+                                },
+                                {
+                                    "body": "This is my first body note.",
+                                    "createdAt": "2023-12-27T16:49:13.729911",
+                                    "id": 1,
+                                    "title": "My First Note",
+                                    "updatedAt": "2023-12-27T16:49:13.729911",
+                                    "user_id": 1,
+                                    "username": "john"
+                                }
+                            ]
+                        }
                     ]
                 })
             )),
@@ -73,13 +95,15 @@ use crate::{
                     "length": 1,
                     "message": "Successfully retrieved all notes based on search criteria: 'My Title'",
                     "notes": [
-                        Notes {
-                            id: 1,
-                            title: "My Title".to_string(),
-                            body: "This is my body note.".to_string(),
-                            created_at: Utc::now().naive_local(),
-                            updated_at: Utc::now().naive_local() + ChronoDuration::days(1)
-                        },
+                        {
+                            "body": "This is my first body note.",
+                            "createdAt": "2023-12-27T16:49:13.729911",
+                            "id": 1,
+                            "title": "My First Note",
+                            "updatedAt": "2023-12-27T16:49:13.729911",
+                            "user_id": 1,
+                            "username": "john"
+                        }
                     ]
                 })
             )),
@@ -89,28 +113,32 @@ use crate::{
                     "length": 1,
                     "message": "Successfully retrieved all notes with limit: 1",
                     "notes": [
-                        Notes {
-                            id: 1,
-                            title: "My Title".to_string(),
-                            body: "This is my body note.".to_string(),
-                            created_at: Utc::now().naive_local(),
-                            updated_at: Utc::now().naive_local() + ChronoDuration::days(1)
-                        },
+                        {
+                            "body": "This is my third body note.",
+                            "createdAt": "2023-12-27T16:54:41.325218",
+                            "id": 3,
+                            "title": "My Third Note",
+                            "updatedAt": "2023-12-27T16:54:41.325218",
+                            "user_id": 1,
+                            "username": "john"
+                        }
                     ]
                 })
             )),
-            ("List of Notes with a limit and based on search criteria: 'first' " = (
+            ("List of Notes with a limit and based on search criteria: 'note' " = (
                 value = json!({
                     "code": 200,
                     "length": 1,
                     "message": "Successfully retrieved all notes with limit: 1 and based on search criteria: 'first'",
                     "notes": [
-                        Notes {
-                            id: 1,
-                            title: "My First Note".to_string(),
-                            body: "This is my first body note.".to_string(),
-                            created_at: Utc::now().naive_local(),
-                            updated_at: Utc::now().naive_local() + ChronoDuration::days(1)
+                        {
+                            "body": "This is my third body note.",
+                            "createdAt": "2023-12-27T16:54:41.325218",
+                            "id": 3,
+                            "title": "My Third Note",
+                            "updatedAt": "2023-12-27T16:54:41.325218",
+                            "user_id": 1,
+                            "username": "john"
                         },
                     ]
                 })
@@ -124,6 +152,27 @@ use crate::{
                 })
             )),
         )),
+        (status = 401, description = "Unauthorized - Access denied due to failed authentication validation or invalid credentials.", body = isize, content_type = "application/json", examples (
+            ("Not yet authorized" = (
+                value = json!({
+                    "code": 403,
+                    "message": "You're not authorized to access this endpoint."
+                })
+            )),
+            ("Token expired" = (
+                value = json!({
+                    "code": 401,
+                    "message": "Your Access token has expired. Please refresh your access token or log in again. 2"
+                })
+            )),
+            ("Invalid token" = (
+                value = json!({
+                    "code": 401,
+                    "details": "Invalid token",
+                    "message": "Your acess token is broken. Please log in again."
+                })
+            ))
+        )),
         (status = 404, description = "Notes not found based the search criteria.", body = String, content_type = "application/json",
             example = json!({
                 "code": 404,
@@ -133,39 +182,81 @@ use crate::{
             })
         ),
         (status = 500, description = "Unexpected error occurred while processing the request.")
+    ),
+    security(
+        ("bearer_auth" = [])
     )
 )]
 pub async fn get_all_notes(
+    jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
     qp: web::Query<GetAllNotesQueryParams>,
 ) -> Result<HttpResponse, AppError> {
+    let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
+
+    let auth_id = jwt_auth.id;
+    let auth_role = jwt_auth.role;
+
+    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    if let Err(err) = is_token_blacklisted {
+        return Err(err);
+    }
+
+    let compose_sql_query;
+    let sql_query = if auth_role == UserRole::Admin.to_string() {
+        compose_sql_query = format!(
+            "SELECT notes.*, users.username FROM notes
+            LEFT JOIN users ON notes.user_id = users.id 
+            WHERE 1=1 {} ORDER BY updated_at {} LIMIT $1 OFFSET $2",
+            if let Some(query_search) = &qp.search {
+                format!(
+                    " AND (notes.title ILIKE '%{}%' OR notes.body ILIKE '%{}%')",
+                    query_search, query_search
+                )
+            } else {
+                String::new()
+            },
+            qp.sort,
+        );
+        SqlxQueryAs::<_, NoteJoinUser>(&compose_sql_query)
+            .bind(qp.limit)
+            .bind(qp.offset)
+    } else {
+        compose_sql_query = format!(
+            "SELECT notes.*, users.username FROM notes
+             LEFT JOIN users ON notes.user_id = users.id 
+             WHERE user_id = $1 {} ORDER BY updated_at {} LIMIT $2 OFFSET $3",
+            if let Some(query_search) = &qp.search {
+                format!(
+                    " AND (notes.title ILIKE '%{}%' OR notes.body ILIKE '%{}%')",
+                    query_search, query_search
+                )
+            } else {
+                String::new()
+            },
+            qp.sort
+        );
+        SqlxQueryAs::<_, NoteJoinUser>(&compose_sql_query)
+            .bind(auth_id)
+            .bind(qp.limit)
+            .bind(qp.offset)
+    };
+
     let db_pool = &app_state.get_ref().db_pool;
+    let stored_notes = sql_query.fetch_all(db_pool).await.map_err(|err| {
+        log::error!("[get_all_notes] Failed to retrieve all notes: {:?}", err);
+        AppErrorBuilder::<bool>::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            String::from("Could not retrieve notes."),
+            None,
+        )
+        .internal_server_error()
+    })?;
 
-    // Handle unauthorized attempts to get_all_user data and retrieve the user if it exists.
-    // let stored_user = validate_user_access_right(&jwt_auth, db_pool, user_id).await?;
-
-    let sql_query = format!(
-        "SELECT * FROM notes WHERE 1=1 {} ORDER BY updated_at {} LIMIT $2 OFFSET $3;",
-        if let Some(query_search) = &qp.search {
-            format!(
-                "AND title ILIKE '%{}%' OR body ILIKE '%{}%'",
-                query_search, query_search
-            )
-        } else {
-            String::new()
-        },
-        qp.sort
-    );
-    let query_result = SqlxQueryAs::<_, Notes>(&sql_query)
-        .bind(&qp.sort)
-        .bind(qp.limit)
-        .bind(qp.offset)
-        .fetch_all(db_pool)
-        .await?;
-
+    // Constructs the response body to be sent back after a successful get all notes. 🔥
     let mut status_code = StatusCode::OK;
     let response_message = if let Some(search_criteria) = &qp.search {
-        if query_result.is_empty() {
+        if stored_notes.is_empty() {
             status_code = StatusCode::NOT_FOUND;
             format!(
                 "No notes found matching the search criteria: '{}'",
@@ -183,7 +274,7 @@ pub async fn get_all_notes(
             )
         }
     } else {
-        if query_result.is_empty() {
+        if stored_notes.is_empty() {
             String::from("Notes is empty.")
         } else if qp.limit == I64Max {
             String::from("Successfully retrieved all notes.")
@@ -192,23 +283,11 @@ pub async fn get_all_notes(
         }
     };
 
-    // struct NewNotes {
-    //     id: i32,
-    //     title: String,
-    //     body: String,
-    //     created_at: i64,
-    //     updated_at: i64
-    // }
-
-    // let new_notes = query_result.iter().map(|note| NewNotes {
-    //     created_at: note.created_at.timestamp(),
-    //     updated_at: note.updated_at.timestamp(),
-    // }).collect();
     let response_body = json!({
         "code": status_code.as_u16(),
         "message": response_message,
-        "length": query_result.len(),
-        "notes": query_result
+        "length": stored_notes.len(),
+        "notes": stored_notes
     });
     Ok(HttpResponse::build(status_code).json(response_body))
 }
@@ -227,24 +306,46 @@ pub async fn get_all_notes(
     post,
     tag = "Notes Endpoint", 
     path = "/api/v1/notes",
-    request_body(content = NotesBuilder, description = "JSON payload containing the title and body of the note.", content_type = "application/json"),
+    request_body(content = NoteBuilder, description = "JSON payload containing the title and body of the note.", content_type = "application/json"),
     responses(
-        (status = 201, description = "Successfully created new note.", content_type = "application/json", body = Notes,
+        (status = 201, description = "Successfully created new note.", content_type = "application/json", body = Note,
             example = json!({
                 "code": 201,
                 "message": "Note created successfully.",
-                "note": Notes {
-                    id: 1,
-                    title: String::from("My First Note"),
-                    body: String::from("This is my first body note."),
-                    created_at: Utc::now().naive_local(),
-                    updated_at: Utc::now().naive_local(),
+                "note": {
+                    "body": "This is my first body note.",
+                    "createdAt": "2023-12-27T16:49:13.729911",
+                    "id": 1,
+                    "title": "My First Note",
+                    "updatedAt": "2023-12-27T16:49:13.729911",
+                    "user_id": 1
                 }
-            })
+            }),
         ),
         (status = 400, description = "Invalid request input.", body = String, content_type = "text/plain",
             example = json!("Json deserialize error: missing field `title` at line 4 column 1")
         ),
+        (status = 401, description = "Unauthorized - Access denied due to failed authentication validation or invalid credentials.", body = isize, content_type = "application/json", examples (
+            ("Not yet authorized" = (
+                value = json!({
+                    "code": 403,
+                    "message": "You're not authorized to access this endpoint."
+                })
+            )),
+            ("Token expired" = (
+                value = json!({
+                    "code": 401,
+                    "message": "Your Access token has expired. Please refresh your access token or log in again. 2"
+                })
+            )),
+            ("Invalid token" = (
+                value = json!({
+                    "code": 401,
+                    "details": "Invalid token",
+                    "message": "Your acess token is broken. Please log in again."
+                })
+            ))
+        )),
         (status = 422, description = "Request input validation failed, rendering the request unprocessable.", body = String, 
             example = json!({
                 "code": 422,
@@ -257,33 +358,63 @@ pub async fn get_all_notes(
             })
         ),
         (status = 500, description = "Unexpected server-side error during request processing.")
+    ),
+    security(
+        ("bearer_auth" = [])
     )
 )]
 pub async fn create_note(
     jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
-    json_request: web::Json<NotesBuilder>,
+    json_request: web::Json<NoteBuilder>,
 ) -> Result<HttpResponse, AppError> {
+    let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
+
+    let auth_id = jwt_auth.id;
+
+    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    if let Err(err) = is_token_blacklisted {
+        return Err(err);
+    }
+
     let payload = json_request.into_inner();
     if let Err(payload) = payload.validate() {
         return Err(payload.into());
     }
 
-    let auth_id = jwt_auth.id;
     let db_pool = &app_state.get_ref().db_pool;
-    let stored_note =
-        SqlxQueryAs::<_, Notes>("INSERT INTO notes (title, body, user_id) VALUES ($1, $2, $3) RETURNING *")
-            .bind(payload.title)
-            .bind(payload.body)
-            .bind(auth_id)
-            .fetch_one(db_pool)
-            .await?;
+    let inserted_note = SqlxQueryAs::<_, Note>(
+        "INSERT INTO notes (title, body, user_id) VALUES ($1, $2, $3) RETURNING *",
+    )
+    .bind(payload.title)
+    .bind(payload.body)
+    .bind(auth_id)
+    .fetch_optional(db_pool)
+    .await
+    .map_err(|err| {
+        log::error!("[create_note] Failed to create new note. {}", err);
+        AppErrorBuilder::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            format!("Could not create note: {}", err),
+            Some(err.to_string()),
+        )
+        .internal_server_error()
+    })?
+    .ok_or_else(|| {
+        AppErrorBuilder::<bool>::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            "Could not create note".to_string(),
+            None,
+        )
+        .internal_server_error()
+    })?;
 
+    // Constructs the response body to be sent back after a successful stored note. 🔥
     let status_code = StatusCode::CREATED;
     let response_body = json!({
         "code": status_code.as_u16(),
         "message": "Note created successfully.",
-        "note": stored_note
+        "note": inserted_note
     });
     Ok(HttpResponse::build(status_code).json(response_body))
 }
@@ -313,24 +444,38 @@ pub async fn create_note(
     params(GetNotePathParams),
     responses(
         // Status 200 response details
-        (status = 200, description = "Successfully retrieved the specified note.", body = Notes, content_type = "application/json", 
+        (status = 200, description = "Successfully retrieved the specified note.", body = Note, content_type = "application/json", 
             example = json!({
                 "code": 200,
-                "message": "Note retrieved successfully.",
-                "note": Notes {
-                    id: 1,
-                    title: String::from("My First Note"),
-                    body: String::from("This is my first body note."),
-                    created_at: Utc::now().naive_local(),
-                    updated_at: Utc::now().naive_local(),
-                }
+                "message": "Note retrieved successfully."
             })
         ),
+        (status = 401, description = "Unauthorized - Access denied due to failed authentication validation or invalid credentials.", body = isize, content_type = "application/json", examples (
+            ("Not yet authorized" = (
+                value = json!({
+                    "code": 403,
+                    "message": "You're not authorized to access this endpoint."
+                })
+            )),
+            ("Token expired" = (
+                value = json!({
+                    "code": 401,
+                    "message": "Your Access token has expired. Please refresh your access token or log in again. 2"
+                })
+            )),
+            ("Invalid token" = (
+                value = json!({
+                    "code": 401,
+                    "details": "Invalid token",
+                    "message": "Your acess token is broken. Please log in again."
+                })
+            ))
+        )),
         // Status 404 response details
         (status = 404, description = "Requested note does not exist.", body = String,
             example = json!({
                 "code": 404,
-                "message": "Note with id: '1' not found."
+                "message": "Note not found."
             })
         ),
         // Status 500 response details
@@ -341,44 +486,65 @@ pub async fn create_note(
                 "details": "An unexpected error occurred during the retrieval process."
             })
         )
+    ),
+    security(
+        ("bearer_auth" = [])
     )
 )]
 pub async fn get_note(
+    jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
     pp: web::Path<GetNotePathParams>,
 ) -> Result<HttpResponse, AppError> {
-    let note_id = pp.into_inner().id;
-    let db_pool = &app_state.get_ref().db_pool;
+    let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
 
-    let query_result = SqlxQueryAs::<_, Notes>("SELECT * FROM notes WHERE id = $1;")
-        .bind(note_id)
+    let note_id = pp.into_inner().id;
+    let auth_id = jwt_auth.id;
+    let auth_role = jwt_auth.role;
+
+    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    if let Err(err) = is_token_blacklisted {
+        return Err(err);
+    }
+
+    let sqlx_query = if auth_role == UserRole::Admin.to_string() {
+        SqlxQueryAs::<_, NoteJoinUser>("SELECT notes.*, users.username FROM notes LEFT JOIN users ON notes.user_id = users.id WHERE notes.id = $1;").bind(note_id)
+    } else {
+        SqlxQueryAs::<_, NoteJoinUser>("SELECT notes.*, users.username FROM notes LEFT JOIN users ON notes.user_id = users.id WHERE notes.id = $1 AND user_id = $2;")
+            .bind(note_id)
+            .bind(auth_id)
+    };
+
+    let db_pool = &app_state.get_ref().db_pool;
+    let stored_note = sqlx_query
         .fetch_optional(db_pool)
         .await
         .map_err(|err| {
+            log::error!("[get_user] Failed to retrieve note with id: '{}'. {}", note_id, err);
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 format!("Failed retrieve note with id: '{}'", note_id),
                 Some(err.to_string()),
             )
             .internal_server_error()
+        })?
+        .ok_or_else(|| {
+            AppErrorBuilder::<bool>::new(
+                StatusCode::NOT_FOUND.as_u16(),
+                String::from("Note not found."),
+                None,
+            )
+            .not_found()
         })?;
 
-    if let Some(result) = query_result {
-        let status_code = StatusCode::OK;
-        let response_body = json!({
-            "code": status_code.as_u16(),
-            "message": "Note retrieved successfully.",
-            "note": result
-        });
-        Ok(HttpResponse::build(status_code).json(response_body))
-    } else {
-        Err(AppErrorBuilder::<bool>::new(
-            StatusCode::NOT_FOUND.as_u16(),
-            format!("Note with id: '{}' not found.", note_id),
-            None,
-        )
-        .not_found())
-    }
+    // Constructs the response body to be sent back after a successful get note. 🔥
+    let status_code = StatusCode::OK;
+    let response_body = json!({
+        "code": status_code.as_u16(),
+        "message": "Note retrieved successfully.",
+        "note": stored_note
+    });
+    Ok(HttpResponse::build(status_code).json(response_body))
 }
 
 /// Update a specific note identified by the provided `id` path parameter.
@@ -417,28 +583,42 @@ pub async fn get_note(
     tag = "Notes Endpoint",
     path = "/api/v1/notes/{id}",
     params(UpdateNotePathParams),
-    request_body(content = NotesBuilder, description = "JSON payload containing the title and body of the note.", content_type = "application/json"),
+    request_body(content = NoteBuilder, description = "JSON payload containing the title and body of the note.", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successfully updated the specified note.", body = Notes, content_type = "application/json",
+        (status = 200, description = "Successfully updated the specified note.", body = Note, content_type = "application/json",
             example = json!({
                 "code": 200,
                 "message": "Note updated successfully.",
-                "note": Notes {
-                    id: 1,
-                    title: String::from("Updated Title Note"),
-                    body: String::from("Updated my first body note to second body note."),
-                    created_at: Utc::now().naive_utc(),
-                    updated_at: Utc::now().naive_utc(),
-                }
             })
         ),
         (status = 400, description = "Invalid request input", body = String, content_type = "text/plain",
             example = json!("Json deserialize error: missing field `title` at line 4 column 1")
         ),
+        (status = 401, description = "Unauthorized - Access denied due to failed authentication validation or invalid credentials.", body = isize, content_type = "application/json", examples (
+            ("Not yet authorized" = (
+                value = json!({
+                    "code": 403,
+                    "message": "You're not authorized to access this endpoint."
+                })
+            )),
+            ("Token expired" = (
+                value = json!({
+                    "code": 401,
+                    "message": "Your Access token has expired. Please refresh your access token or log in again. 2"
+                })
+            )),
+            ("Invalid token" = (
+                value = json!({
+                    "code": 401,
+                    "details": "Invalid token",
+                    "message": "Your acess token is broken. Please log in again."
+                })
+            ))
+        )),
         (status = 404, description = "Requested note does not exist.", body = String,
             example = json!({
                 "code": 404,
-                "message": "Note with id: '144' not found."
+                "message": "Note not found."
             })
         ),
         (status = 422, description = "Request input validation failed, rendering the request unprocessable", body = String, 
@@ -459,53 +639,115 @@ pub async fn get_note(
                 "details": "An unexpected error occurred during the update process."
             })
         )
+    ),
+    security(
+        ("bearer_auth" = [])
     )
 )]
 pub async fn update_note(
+    jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
     pp: web::Path<UpdateNotePathParams>,
-    json_request: web::Json<NotesBuilder>,
+    json_request: web::Json<NoteUpdatePayload>,
 ) -> Result<HttpResponse, AppError> {
+    let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
+
     let note_id = pp.into_inner().id;
+    let auth_id = jwt_auth.id;
+    let auth_role = jwt_auth.role;
+
+    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    if let Err(err) = is_token_blacklisted {
+        return Err(err);
+    }
+
     let payload = json_request.into_inner();
     if let Err(payload) = payload.validate() {
         return Err(payload.into());
     }
+
     let db_pool = &app_state.get_ref().db_pool;
-
-    let query_result = SqlxQueryAs::<_, Notes>(
-        "UPDATE notes SET title = $1, body = $2 WHERE id = $3 RETURNING *;",
-    )
-    .bind(payload.title)
-    .bind(payload.body)
-    .bind(note_id)
-    .fetch_optional(db_pool)
-    .await
-    .map_err(|err| {
-        AppErrorBuilder::new(
-            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            format!("Failed to update note with id: '{}'", note_id),
-            Some(err.to_string()),
-        )
-        .internal_server_error()
-    })?;
-
-    if let Some(result) = query_result {
-        let status_code = StatusCode::OK;
-        let response_body = json!({
-            "code": status_code.as_u16(),
-            "message": "Note updated successfully.",
-            "note": result
-        });
-        Ok(HttpResponse::build(status_code).json(response_body))
+    let sql_query_get_stored_note = if &auth_role == &UserRole::Admin.to_string() {
+        sqlx::query_as::<_, Note>("SELECT * FROM notes WHERE id = $1;").bind(note_id)
     } else {
-        Err(AppErrorBuilder::<bool>::new(
-            StatusCode::NOT_FOUND.as_u16(),
-            format!("Note with id: '{}' not found.", note_id),
-            None,
+        sqlx::query_as::<_, Note>("SELECT * FROM notes WHERE id = $1 AND user_id = $2;")
+            .bind(note_id)
+            .bind(auth_id)
+    };
+    let stored_note = sql_query_get_stored_note
+        .fetch_optional(db_pool)
+        .await
+        .map_err(|err| {
+            log::error!(
+                "[update_note] Failed to retrieve note with id: '{}'. {}",
+                note_id, err
+            );
+            AppErrorBuilder::new(
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                format!("Failed retrieve note with id: '{}'", note_id),
+                Some(err.to_string()),
+            )
+            .internal_server_error()
+        })?
+        .ok_or_else(|| {
+            AppErrorBuilder::<bool>::new(
+                StatusCode::NOT_FOUND.as_u16(),
+                String::from("Note not found. 1"),
+                None,
+            )
+            .not_found()
+        })?;
+
+    let title = payload.title.unwrap_or(stored_note.title);
+    let body = payload.body.unwrap_or(stored_note.body);
+
+    let sql_query_update_note = if auth_role == UserRole::Admin.to_string() {
+        SqlxQueryAs::<_, Note>("UPDATE notes SET title = $1, body = $2 WHERE id = $3 RETURNING *;")
+            .bind(&title)
+            .bind(&body)
+            .bind(note_id)
+    } else {
+        SqlxQueryAs::<_, Note>(
+            "UPDATE notes SET title = $1, body = $2 WHERE id = $3 AND user_id = $4 RETURNING *;",
         )
-        .not_found())
-    }
+        .bind(&title)
+        .bind(&body)
+        .bind(note_id)
+        .bind(auth_id)
+    };
+    let updated_note = sql_query_update_note
+        .fetch_optional(db_pool)
+        .await
+        .map_err(|err| {
+            log::error!(
+                "[update_note] Failed to update note with id: '{}'. {}",
+                note_id,
+                err
+            );
+            AppErrorBuilder::new(
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                format!("Failed to update note with id: '{}'", note_id),
+                Some(err.to_string()),
+            )
+            .internal_server_error()
+        })?
+        .ok_or_else(|| {
+            AppErrorBuilder::<bool>::new(
+                StatusCode::NOT_FOUND.as_u16(),
+                String::from("Note not found. 2"),
+                None,
+            )
+            .not_found()
+        })?;
+
+    // Constructs the response body to be sent back after a successful note update. 🔥
+    let status_code = StatusCode::OK;
+    let response_body = json!({
+        "code": status_code.as_u16(),
+        "message": format!("Note with id: '{}' updated successfully.", note_id),
+        "note": updated_note
+    });
+    Ok(HttpResponse::build(status_code).json(response_body))
 }
 
 /// This endpoint handles the deletion of a note by its ID.
@@ -531,25 +773,39 @@ pub async fn update_note(
     path = "/api/v1/notes/{id}",
     params(DeleteNotePathParams),
     responses(
-        (status = 200, description = "Successfully deleted the specified note.", body = Notes, content_type = "application/json",
+        (status = 200, description = "Successfully deleted the specified note.", body = Note, content_type = "application/json",
             example = json!({
                 "code": 200,
                 "message": "Note deleted successfully.",
-                "note": Notes {
-                    id: 1,
-                    title: String::from("My Title Note"),
-                    body: String::from("This is my first body note."),
-                    created_at: Utc::now().naive_utc(),
-                    updated_at: Utc::now().naive_utc(),
-                }
             }),
         ),
+        (status = 401, description = "Unauthorized - Access denied due to failed authentication validation or invalid credentials.", body = isize, content_type = "application/json", examples (
+            ("Not yet authorized" = (
+                value = json!({
+                    "code": 403,
+                    "message": "You're not authorized to access this endpoint."
+                })
+            )),
+            ("Token expired" = (
+                value = json!({
+                    "code": 401,
+                    "message": "Your Access token has expired. Please refresh your access token or log in again. 2"
+                })
+            )),
+            ("Invalid token" = (
+                value = json!({
+                    "code": 401,
+                    "details": "Invalid token",
+                    "message": "Your acess token is broken. Please log in again."
+                })
+            ))
+        )),
         (status = 404, description = "Invalid request input.", body = String, content_type = ["application/json", "text/plain"], examples(
             ("Not Found" = (
                 description = "",
                 value = json!({
                     "code": 404,
-                    "message": "Note with id: '144' not found."
+                    "message": "Note not found."
                 })
             )),
             ("Failed parsing path parameters" = (
@@ -564,42 +820,67 @@ pub async fn update_note(
                 "details": "An unexpected error occurred during the delete process."
             })
         )
+    ),
+    security(
+        ("bearer_auth" = [])
     )
 )]
 pub async fn delete_note(
+    jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
     pp: web::Path<DeleteNotePathParams>,
 ) -> Result<HttpResponse, AppError> {
-    let note_id = pp.into_inner().id;
-    let db_pool = &app_state.get_ref().db_pool;
+    let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
 
-    let query_result = SqlxQueryAs::<_, Notes>("DELETE FROM notes WHERE id = $1 RETURNING *")
-        .bind(note_id)
+    let auth_id = jwt_auth.id;
+    let auth_role = jwt_auth.role;
+    let note_id = pp.into_inner().id;
+
+    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    if let Err(err) = is_token_blacklisted {
+        return Err(err);
+    }
+
+    let sql_query = if auth_role == UserRole::Admin.to_string() {
+        SqlxQueryAs::<_, Note>("DELETE FROM notes WHERE id = $1 RETURNING *;").bind(note_id)
+    } else {
+        SqlxQueryAs::<_, Note>("DELETE FROM notes WHERE id = $1 AND user_id = $2 RETURNING *;")
+            .bind(note_id)
+            .bind(auth_id)
+    };
+
+    let db_pool = &app_state.get_ref().db_pool;
+    let deleted_note = sql_query
         .fetch_optional(db_pool)
         .await
         .map_err(|err| {
+            log::error!(
+                "[delete_note] Failed to delete note with id: '{}'. {}",
+                note_id,
+                err
+            );
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 format!("Failed to delete note with id: '{}'", note_id),
                 Some(err.to_string()),
             )
             .internal_server_error()
+        })?
+        .ok_or_else(|| {
+            AppErrorBuilder::<bool>::new(
+                StatusCode::NOT_FOUND.as_u16(),
+                String::from("Note not found."),
+                None,
+            )
+            .not_found()
         })?;
 
-    if let Some(result) = query_result {
-        let status_code = StatusCode::OK;
-        let response_body = json!({
-            "code": status_code.as_u16(),
-            "message": "Note deleted successfully.",
-            "note": result
-        });
-        Ok(HttpResponse::build(status_code).json(response_body))
-    } else {
-        Err(AppErrorBuilder::<bool>::new(
-            StatusCode::NOT_FOUND.as_u16(),
-            format!("Note with id: '{}' not found", note_id),
-            None,
-        )
-        .not_found())
-    }
+    // Constructs the response body to be sent back after a successful note delete. 🔥
+    let status_code = StatusCode::OK;
+    let response_body = json!({
+        "code": status_code.as_u16(),
+        "message": "Note deleted successfully.",
+        "note": deleted_note
+    });
+    Ok(HttpResponse::build(status_code).json(response_body))
 }

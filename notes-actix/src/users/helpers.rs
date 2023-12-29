@@ -24,14 +24,14 @@ pub const CHRONO_ACCESS_EXPIRED: Lazy<ChronoDuration> = Lazy::new(|| {
         .unwrap()
         .parse::<i64>()
         .unwrap();
-    ChronoDuration::minutes(access_token_expired)
+    ChronoDuration::seconds(access_token_expired)
 });
 pub const CHRONO_REFRESH_EXPIRED: Lazy<ChronoDuration> = Lazy::new(|| {
     let refresh_token_expired = env::var("TOKEN_DURATION_REFRESH")
         .unwrap()
         .parse::<i64>()
         .unwrap();
-    ChronoDuration::minutes(refresh_token_expired)
+    ChronoDuration::seconds(refresh_token_expired)
 });
 
 pub fn purge_expired_refresh_token_cookie(cookie_name: &str, message: &str) -> HttpResponse {
@@ -60,6 +60,7 @@ pub async fn is_username_taken(username: &str, db_pool: &DbPool) -> Result<(), A
         .fetch_optional(db_pool)
         .await
         .map_err(|err| {
+            log::error!("[is_username_taken] Failed to execute query. {}", err);
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 String::from("Failed to check if username is taken."),
@@ -89,7 +90,7 @@ pub fn hashing_password(password: &str) -> Result<String, AppError> {
     let hashed_password = argon2
         .hash_password(password.as_ref(), &salt_string)
         .map_err(|err| {
-            log::error!("failed to hash password: {}", err);
+            log::error!("[hashing_password] Failed to hash password. {}", err);
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 String::from("Failed to hash password."),

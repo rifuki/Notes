@@ -3,7 +3,7 @@ use std::env;
 use actix_cors::Cors;
 use actix_web::{
     get,
-    middleware::{Logger, NormalizePath},
+    middleware::NormalizePath,
     web, App, HttpResponse, HttpServer,
 };
 use notes_actix::{
@@ -12,10 +12,13 @@ use notes_actix::{
             __path_create_note, __path_delete_note, __path_get_all_notes, __path_get_note,
             __path_update_note,
         },
-        models::{Notes, NotesBuilder},
+        models::{Note, NoteBuilder, NoteJoinUser, NoteUpdatePayload},
         routes::scoped_notes,
     },
-    ping::handler::{__path_ping_service, __path_server_time, ping_service, server_time},
+    ping::handler::{
+        __path_increment_counter, __path_ping_service, __path_server_time, increment_counter,
+        ping_service, server_time,
+    },
     types::AppState,
     users::{
         admin::{__path_register_admin, register_admin},
@@ -30,7 +33,7 @@ use notes_actix::{
         },
         routes::scoped_users,
     },
-    utils::establish_connection,
+    utils::{establish_database_pool, initialize_redis_pool},
 };
 use utoipa::{
     openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
@@ -68,12 +71,20 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to parse TOKEN_DURATION_ACCESS.");
     // End of Checking env variables for forward compatibility.
 
-    let db_pool = establish_connection(&db_url);
+    let redis_port = env::var("REDIS_PORT").expect("Env REDIS_PORT is not set.");
+    let redis_url = format!("redis://127.0.0.1:{}", redis_port);
+    let redis_pool = initialize_redis_pool(&redis_url).await;
+
+    let db_pool = establish_database_pool(&db_url).await;
     sqlx::migrate!("./migrations")
         .run(&db_pool)
         .await
         .expect("Error running DB migrations");
-    let app_state = AppState { db_pool };
+
+    let app_state = AppState {
+        db_pool,
+        redis_pool,
+    };
 
     #[derive(OpenApi)]
     #[openapi(
@@ -91,8 +102,8 @@ async fn main() -> std::io::Result<()> {
                 url = "https://opensource.org/licenses/MIT"
             )
         ),
-        paths(get_all_notes, create_note, get_note, update_note, delete_note, auth_login, auth_logout, auth_refresh, auth_register, get_all_users, get_user, update_user, delete_user, ping_service, register_admin, server_time),
-        components(schemas(Notes, NotesBuilder, User, UserClaims, UserLoginPayload, UserRegisterPayload, UserUpdatePayload, AdminBuilder)),
+        paths(get_all_notes, create_note, get_note, update_note, delete_note, auth_login, auth_logout, auth_refresh, auth_register, get_all_users, get_user, update_user, delete_user, ping_service, register_admin, server_time, increment_counter),
+        components(schemas(Note, NoteBuilder, NoteUpdatePayload, NoteJoinUser, User, UserClaims, UserLoginPayload, UserRegisterPayload, UserUpdatePayload, AdminBuilder)),
         modifiers(&SecurityAddon)
     )]
     struct ApiDoc;
@@ -121,7 +132,7 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .app_data(web::Data::new(app_state.clone()))
-            .wrap(Logger::default())
+            // .wrap(Logger::default())
             .wrap(cors)
             .service(
                 SwaggerUi::new("/docs/{_:.*}").url("/api-docs/openapi.json", ApiDoc::openapi()),
@@ -129,6 +140,7 @@ async fn main() -> std::io::Result<()> {
             .service(index)
             .service(ping_service)
             .service(server_time)
+            .service(increment_counter)
             .service(
                 web::scope("/api").wrap(NormalizePath::trim()).service(
                     web::scope("/v1")

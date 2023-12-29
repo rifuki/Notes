@@ -1,11 +1,15 @@
+use bb8::Pool as Bb8Pool;
+use bb8_redis::RedisConnectionManager;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPool;
 
 pub type DbPool = PgPool;
+pub type RedisPool = Bb8Pool<RedisConnectionManager>;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db_pool: DbPool,
+    pub redis_pool: RedisPool,
 }
 
 #[derive(Serialize, Clone, Deserialize)]
@@ -27,6 +31,18 @@ impl UserRole {
         match *self {
             Self::Admin => String::from("admin"),
             Self::User => String::from("user"),
+        }
+    }
+}
+
+pub enum RedisKey {
+    BlacklistToken,
+}
+
+impl RedisKey {
+    pub fn to_string(&self) -> String {
+        match *self {
+            Self::BlacklistToken => String::from("bcx"),
         }
     }
 }

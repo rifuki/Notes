@@ -1,11 +1,14 @@
 use actix_web::{
     cookie::{time::Duration, Cookie, SameSite},
     get,
-    http::header,
-    HttpResponse,
+    http::{header, StatusCode},
+    HttpResponse, web,
 };
+use bb8_redis::redis::AsyncCommands;
 use chrono::Utc;
 use serde_json::json;
+
+use crate::{types::AppState, errors::{AppError, AppErrorBuilder}};
 
 /// Health Check - Ping Service
 ///
@@ -62,10 +65,10 @@ use serde_json::json;
 )]
 #[get("/ping")]
 pub async fn ping_service() -> HttpResponse {
+    // Constructs the response body to be sent back after a successful ping request. 🔥
     let response_body = json!({
         "message": "pong"
     });
-
     let yay_cookie = Cookie::build("ping", "yay ".repeat(100))
         .secure(false)
         .same_site(SameSite::Strict)
@@ -73,7 +76,6 @@ pub async fn ping_service() -> HttpResponse {
         .path("/")
         .max_age(Duration::MINUTE)
         .finish();
-
     HttpResponse::Ok()
         .insert_header((header::CONTENT_TYPE, "application/json"))
         .insert_header((header::CONTENT_SECURITY_POLICY, "your_policy_here"))
@@ -83,7 +85,6 @@ pub async fn ping_service() -> HttpResponse {
         .insert_header((header::ACCEPT_LANGUAGE, "en-US"))
         .cookie(yay_cookie)
         .json(response_body)
-
 }
 
 /// Handler to retrieve the server time.
@@ -107,9 +108,49 @@ pub async fn ping_service() -> HttpResponse {
 )]
 #[get("/time")]
 pub async fn server_time() -> HttpResponse {
+    // Constructs the response body to be sent back after a successful request server time. 🔥
     HttpResponse::Ok()
       .insert_header((header::CONTENT_TYPE, "application/json"))
       .json(json!({
             "server_time": Utc::now().to_string()
         }))
+}
+
+/// Handler to increment counter
+///
+/// Increment the redis counter value.
+///
+/// # Returns
+///
+/// Returns a JSON response containing the counter.
+#[utoipa::path(
+    get,
+    tag = "HealthCheck",
+    path = "/counter",
+    responses(
+        (status = 200, description = "OK - Counter incremented.", body = String, content_type = "application/json",
+            example = json!({
+                "counter": 1
+            })
+        )
+    )
+)]
+#[get("/counter")]
+pub async fn increment_counter(app_state: web::Data<AppState>) -> Result<HttpResponse, AppError> {
+    let mut redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
+    let counter: i64 = redis_pool.incr("counter", 1).await.map_err(|err| {
+        log::error!("[increment_counter] failed to increment counter. {}", err);
+        AppErrorBuilder::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            String::from("Error incrementing counter"),     
+            Some(err.to_string())
+        ).internal_server_error()
+    })?;
+
+    // Constructs the response body to be sent back after a successful redis increment counter. 🔥 
+    let response_body = json!({
+        "counter": counter
+    });
+   Ok(HttpResponse::Ok().json(response_body))
+
 }

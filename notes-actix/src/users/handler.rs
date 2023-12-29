@@ -9,6 +9,7 @@ use argon2::{
     password_hash::{rand_core::OsRng, SaltString},
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
 };
+use bb8_redis::redis::AsyncCommands;
 use chrono::Utc;
 use jsonwebtoken::{
     decode as JwtDecode, encode as JwtEncode, errors::ErrorKind as JwtErrorKind, Algorithm,
@@ -20,8 +21,9 @@ use validator::Validate;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
+    helpers::handle_blacklist_token,
     jwt::{validate_user_access_right, JwtAuth},
-    types::{AppState, Claims, UserRole},
+    types::{AppState, Claims, RedisKey, UserRole},
     users::{
         helpers::{
             hashing_password, is_username_taken, purge_expired_refresh_token_cookie,
@@ -113,14 +115,15 @@ pub async fn auth_login(
     if let Err(err) = payload.validate() {
         return Err(err.into());
     }
-    let db_pool = &app_state.get_ref().db_pool;
 
+    let db_pool = &app_state.get_ref().db_pool;
     // Checking is username auth stored?.
     let stored_user = SqlxQueryAs::<_, User>("SELECT * FROM users WHERE username = $1")
         .bind(&payload.username)
         .fetch_optional(db_pool)
         .await
         .map_err(|err| {
+            log::error!("[auth_login] Error fetch username from database. {}", err);
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 String::from("Error fetching stored user."),
@@ -165,9 +168,10 @@ pub async fn auth_login(
             .naive_utc()
             .checked_add_signed(*CHRONO_ACCESS_EXPIRED)
             .ok_or_else(|| {
+                log::error!("[claims_access_token] Failed to create a new claims access token.");
                 AppErrorBuilder::<bool>::new(
                     StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                    String::from("Failed to calculate eefresh token expiration."),
+                    String::from("Failed to calculate refresh token expiration."),
                     None,
                 )
                 .internal_server_error()
@@ -181,6 +185,10 @@ pub async fn auth_login(
         &EncodingKey::from_secret(&secret_key_access.as_ref()),
     )
     .map_err(|err| {
+        log::error!(
+            "[encoded_access_token] Failed to encode access token: {}",
+            err
+        );
         AppErrorBuilder::new(
             StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             String::from("Failed to encode access token."),
@@ -195,6 +203,7 @@ pub async fn auth_login(
             .naive_utc()
             .checked_add_signed(*CHRONO_REFRESH_EXPIRED)
             .ok_or_else(|| {
+                log::error!("[claims_refresh_token] Failed to create a new claims refresh token.");
                 AppErrorBuilder::<bool>::new(
                     StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                     String::from("Failed to calculate refresh token expiration."),
@@ -211,6 +220,10 @@ pub async fn auth_login(
         &EncodingKey::from_secret(&secret_key_refresh.as_ref()),
     )
     .map_err(|err| {
+        log::error!(
+            "[encoded_refresh_token] Failed to encode refresh token: {}",
+            err
+        );
         AppErrorBuilder::new(
             StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             String::from("Failed to encode refresh token."),
@@ -228,6 +241,10 @@ pub async fn auth_login(
     .fetch_one(db_pool)
     .await
     .map_err(|err| {
+        log::error!(
+            "[user_updated_refresh_token] Error updating refresh token for user. {}",
+            err
+        );
         AppErrorBuilder::new(
             StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             String::from("Failed to set refresh token."),
@@ -373,7 +390,7 @@ pub async fn auth_refresh(
         .fetch_optional(db_pool)
         .await
         .map_err(|err| {
-            log::error!("Error getting stored refresh_token: {}", err);
+            log::error!("[stored_user] Error getting stored refresh_token. {}", err);
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 String::from("Error fetching stored user."),
@@ -400,10 +417,10 @@ pub async fn auth_refresh(
             .naive_utc()
             .checked_add_signed(*CHRONO_ACCESS_EXPIRED)
             .ok_or_else(|| {
-                log::error!("Failed to calculate access token expiration.");
+                log::error!("[claims_access_token] Failed to create a new claims access token.");
                 AppErrorBuilder::<bool>::new(
                     StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                    String::from("Failed to calculate refresh token expiration."),
+                    String::from("Failed to calculate access token expiration."),
                     None,
                 )
                 .internal_server_error()
@@ -416,12 +433,15 @@ pub async fn auth_refresh(
         &claims_access_token,
         &EncodingKey::from_secret(&secret_key_access.as_ref()),
     )
-    .map_err(|e| {
-        log::error!("Failed to generate access token: {}", e);
+    .map_err(|err| {
+        log::error!(
+            "[encoded_access_token] Failed to generate access token. {}",
+            err
+        );
         AppErrorBuilder::new(
             StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             String::from("Failed to encode access token."),
-            Some(e.to_string()),
+            Some(err.to_string()),
         )
         .internal_server_error()
     })?;
@@ -535,6 +555,10 @@ pub async fn auth_logout(
     .fetch_optional(db_pool)
     .await
     .map_err(|err| {
+        log::error!(
+            "[set_refresh_token_null] Error updating refresh token to null. {}",
+            err
+        );
         AppErrorBuilder::new(
             StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             String::from("Failed to set refresh token."),
@@ -710,6 +734,7 @@ pub async fn auth_register(
             .fetch_optional(db_pool)
             .await
             .map_err(|err| {
+                log::error!("[is_email_associated] failed to execute query. {}", err);
                 AppErrorBuilder::new(
                     StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                     String::from("Failed to check if email is associated."),
@@ -737,6 +762,7 @@ pub async fn auth_register(
     let hashed_password = argon2
         .hash_password(&payload.password.as_ref(), &salt_string)
         .map_err(|err| {
+            log::error!("[hashed_password] failed to hash password. {}", err);
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 format!("Failed to hash password"),
@@ -746,21 +772,38 @@ pub async fn auth_register(
         })?
         .to_string();
 
-    let query_result = SqlxQueryAs::<_, User>(
+    let storing_user = SqlxQueryAs::<_, User>(
         "INSERT INTO users(username, password, email) VALUES($1,$2,$3) RETURNING *;",
     )
     .bind(&payload.username)
     .bind(hashed_password)
     .bind(&payload.email)
-    .fetch_one(db_pool)
-    .await?;
+    .fetch_optional(db_pool)
+    .await
+    .map_err(|err| {
+        log::error!("[storing_user] Error storing user: {}", err);
+        AppErrorBuilder::<bool>::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            String::from("Failed to create user account."),
+            None,
+        )
+        .internal_server_error()
+    })?
+    .ok_or_else(|| {
+        AppErrorBuilder::<bool>::new(
+            StatusCode::NOT_FOUND.as_u16(),
+            String::from("User not found"),
+            None,
+        )
+        .not_found()
+    })?;
 
     // Constructs the response body to be sent back after a successful stored user. 🔥
     let status_code = StatusCode::CREATED;
     let response_body = json!({
         "code": status_code.as_u16(),
         "message": format!("User '{}' created successfully", &payload.username),
-        "user": query_result
+        "user": storing_user
     });
     Ok(HttpResponse::build(status_code).json(response_body))
 }
@@ -867,6 +910,15 @@ pub async fn get_all_users(
     jwt_auth: JwtAuth,
     app_state: web::Data<AppState>,
 ) -> Result<HttpResponse, AppError> {
+    let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
+
+    let auth_id = jwt_auth.id;
+
+    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    if let Err(err) = is_token_blacklisted {
+        return Err(err);
+    }
+
     // Handle if not admin users.
     let auth_role = &jwt_auth.role;
     if auth_role != &UserRole::Admin.to_string() {
@@ -879,11 +931,11 @@ pub async fn get_all_users(
     }
 
     let db_pool = &app_state.get_ref().db_pool;
-
-    let query_result = SqlxQueryAs::<_, User>("SELECT * FROM users ORDER BY id DESC;")
+    let stored_users = SqlxQueryAs::<_, User>("SELECT * FROM users ORDER BY id DESC;")
         .fetch_all(db_pool)
         .await
         .map_err(|err| {
+            log::error!("[stored_users] Error fetching all users. {}", err);
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 String::from("Failed to retrieve all users."),
@@ -897,8 +949,8 @@ pub async fn get_all_users(
     let response_body = json!({
         "code": status_code.as_u16(),
         "message": "List of users retrieved successfully.",
-        "length": query_result.len(),
-        "users": query_result
+        "length": stored_users.len(),
+        "users": stored_users
     });
     Ok(HttpResponse::Ok().json(response_body))
 }
@@ -997,9 +1049,17 @@ pub async fn get_user(
     app_state: web::Data<AppState>,
     pp: web::Path<GetUserPathParams>,
 ) -> Result<HttpResponse, AppError> {
+    let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
+
+    let auth_id = jwt_auth.id;
+
+    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    if let Err(err) = is_token_blacklisted {
+        return Err(err);
+    }
+
     let user_id = pp.into_inner().id;
     let db_pool = &app_state.get_ref().db_pool;
-
     // Handle unauthorized attempts to get user data and retrieve the user if it exists.
     let stored_user = validate_user_access_right(&jwt_auth, db_pool, user_id).await?;
 
@@ -1128,9 +1188,17 @@ pub async fn update_user(
     pp: web::Path<UpdateUserPathParams>,
     json_request: web::Json<UserUpdatePayload>,
 ) -> Result<HttpResponse, AppError> {
+    let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
+
+    let auth_id = jwt_auth.id;
+
+    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    if let Err(err) = is_token_blacklisted {
+        return Err(err);
+    }
+
     let user_id = pp.into_inner().id;
     let db_pool = &app_state.get_ref().db_pool;
-
     // Handle unauthorized attempts to update user data and retrieve the user if it exists.
     let stored_user = validate_user_access_right(&jwt_auth, db_pool, user_id).await?;
 
@@ -1217,7 +1285,7 @@ pub async fn update_user(
         .fetch_optional(db_pool)
         .await
         .map_err(|err| {
-            log::error!("Failed to execute update_user query: {:?}", err);
+            log::error!("[updated_user] Error execute update user query. {}", err);
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 format!("Failed to update user with id: '{}'", user_id),
@@ -1330,9 +1398,17 @@ pub async fn delete_user(
     app_state: web::Data<AppState>,
     pp: web::Path<DeleteUserPathParams>,
 ) -> Result<HttpResponse, AppError> {
+    let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
+
+    let auth_id = jwt_auth.id;
+
+    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    if let Err(err) = is_token_blacklisted {
+        return Err(err);
+    }
+
     let user_id = pp.into_inner().id;
     let db_pool = &app_state.get_ref().db_pool;
-
     // Handle unauthorized attempts to delete user data and retrieve the user if it exists.
     let _stored_user = validate_user_access_right(&jwt_auth, db_pool, user_id).await?;
 
@@ -1342,6 +1418,7 @@ pub async fn delete_user(
         .fetch_optional(db_pool)
         .await
         .map_err(|err| {
+            log::error!("[deleted_user] Error executing query delete user. {}", err);
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 format!("Failed to delete user with id: '{}'", user_id),
@@ -1358,6 +1435,55 @@ pub async fn delete_user(
             .not_found()
         })?;
 
+    let mut redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
+    let key_redis = format!("{}-{}", RedisKey::BlacklistToken.to_string(), &jwt_auth.id);
+    let expired_access_token = env::var("TOKEN_DURATION_ACCESS")
+        .map_err(|err| {
+            log::error!("[expired_access_token] Error getting token: {}", err);
+            AppErrorBuilder::new(
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                format!(
+                    "Failed to get TOKEN_DURATION_ACCESS environment variable: {}",
+                    err
+                ),
+                Some(err.to_string()),
+            )
+            .internal_server_error()
+        })?
+        .parse::<u64>()
+        .map_err(|err| {
+            log::error!("[expired_access_token] Error parse token: {}", err);
+            AppErrorBuilder::new(
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                format!(
+                    "Failed to parse TOKEN_DURATION_ACCESS environment variable: {}",
+                    err
+                ),
+                Some(err.to_string()),
+            )
+            .internal_server_error()
+        })?;
+
+    let blacklisting_token = redis_pool
+        .set_ex::<_, _, bool>(key_redis, &jwt_auth.access_token, expired_access_token)
+        .await
+        .map_err(|err| {
+            log::error!("[blacklisting_token] Error setting token to redis. {}", err);
+            AppErrorBuilder::new(
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                String::from("Failed to set access token in Redis."),
+                Some(err.to_string()),
+            )
+            .internal_server_error()
+        })?;
+    if !blacklisting_token {
+        return Err(AppErrorBuilder::<bool>::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            format!("Failed to set access token to blacklist"),
+            None,
+        )
+        .internal_server_error());
+    }
     // Constructs the response body to be seVnt back after a successful user delete. 🔥
     let status_code = StatusCode::OK;
     let response_body = json!({

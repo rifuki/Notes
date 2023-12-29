@@ -8,7 +8,6 @@ use actix_web::{
     http::{header as HttpHeader, StatusCode},
     FromRequest, HttpRequest,
 };
-use chrono::Utc;
 use jsonwebtoken::{
     decode as JwtDecode, errors::ErrorKind as JwtErrorKind, Algorithm, DecodingKey, Validation,
 };
@@ -16,7 +15,9 @@ use sqlx::query_as as SqlxQueryAs;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
-    types::{Claims, DbPool, UserRole}, users::models::User,
+    types::{Claims, DbPool, UserRole},
+    users::models::User,
+    utils::get_current_utc_timestamp,
 };
 
 pub struct JwtAuth {
@@ -25,6 +26,7 @@ pub struct JwtAuth {
     pub role: String,
     pub iat: i64,
     pub exp: i64,
+    pub access_token: String,
 }
 impl FromRequest for JwtAuth {
     type Error = AppError;
@@ -90,7 +92,7 @@ impl FromRequest for JwtAuth {
         }
         let access_token = decoded_access_token.clone().unwrap().claims;
         let access_token_exp = access_token.exp;
-        if Utc::now().naive_utc().timestamp() > access_token_exp {
+        if get_current_utc_timestamp() > access_token_exp {
             return ready(Err(AppErrorBuilder::<bool>::new(
                 StatusCode::UNAUTHORIZED.as_u16(),
                 String::from(
@@ -107,6 +109,7 @@ impl FromRequest for JwtAuth {
             role: access_token.role,
             iat: access_token.iat,
             exp: access_token.exp,
+            access_token: bearer_token.to_owned(),
         }))
     }
 }
@@ -126,7 +129,10 @@ pub async fn validate_user_access_right(
         .fetch_optional(db_pool)
         .await
         .map_err(|err| {
-            log::error!("Failed to find user: {}", err);
+            log::error!(
+                "[validate_user_access_right] Failed to retrieve user. {}",
+                err
+            );
             AppErrorBuilder::new(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 format!("Failed to retrieve user with id: '{}'", user_id),
