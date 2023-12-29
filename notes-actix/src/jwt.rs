@@ -1,23 +1,13 @@
-use std::{
-    env,
-    future::{ready, Ready},
-};
+use std::future::{ready, Ready};
 
-use actix_web::{
-    dev::Payload,
-    http::{header as HttpHeader, StatusCode},
-    FromRequest, HttpRequest,
-};
-use jsonwebtoken::{
-    decode as JwtDecode, errors::ErrorKind as JwtErrorKind, Algorithm, DecodingKey, Validation,
-};
+use actix_web::{dev::Payload, http::StatusCode, FromRequest, HttpRequest};
 use sqlx::query_as as SqlxQueryAs;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
-    types::{Claims, DbPool, UserRole},
+    helpers::{decoding_claim_token, get_bearer_authorization_token},
+    types::{ClaimsToken, DbPool, UserRole},
     users::models::User,
-    utils::get_current_utc_timestamp,
 };
 
 pub struct JwtAuth {
@@ -32,83 +22,24 @@ impl FromRequest for JwtAuth {
     type Error = AppError;
     type Future = Ready<Result<Self, Self::Error>>;
     fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
-        let auth_header = req.headers().get(HttpHeader::AUTHORIZATION);
-        if auth_header.is_none() {
-            return ready(Err(AppErrorBuilder::<bool>::new(
-                StatusCode::UNAUTHORIZED.as_u16(),
-                // String::from("Authorization header not found."),
-                String::from("You're not authorized to access this endpoint."),
-                None,
-            )
-            .unauthorized()));
-        }
-        let auth_header_value = auth_header.map_or("", |hv| hv.to_str().unwrap_or_default());
-        if !auth_header_value.starts_with("Bearer ") {
-            return ready(Err(AppErrorBuilder::<bool>::new(
-                StatusCode::UNAUTHORIZED.as_u16(),
-                String::from("Invalid bearer token format."),
-                None,
-            )
-            .unauthorized()));
-        }
-        let bearer_token_parts = auth_header_value.split_whitespace().collect::<Vec<&str>>();
-        if bearer_token_parts.len() != 2 {
-            return ready(Err(AppErrorBuilder::<bool>::new(
-                StatusCode::UNAUTHORIZED.as_u16(),
-                String::from("Invalid bearer token."),
-                None,
-            )
-            .unauthorized()));
-        }
-        let bearer_token = bearer_token_parts[1];
+        let bearer_token = match get_bearer_authorization_token(req) {
+            Ok(token) => token,
+            Err(err) => return ready(Err(err)),
+        };
 
-        let secret_key_access = env::var("SECRET_KEY_ACCESS").unwrap();
-        let decoded_access_token = JwtDecode::<Claims>(
-            bearer_token,
-            &DecodingKey::from_secret(&secret_key_access.as_ref()),
-            &Validation::new(Algorithm::HS256),
-        );
-        if let Err(error) = &decoded_access_token {
-            match error.kind() {
-                JwtErrorKind::ExpiredSignature => {
-                    return ready(Err(AppErrorBuilder::<bool>::new(
-                        StatusCode::UNAUTHORIZED.as_u16(),
-                        String::from(
-                            "Your Access token has expired. Please refresh your access token or log in again. 2",
-                        ),
-                        None,
-                    )
-                    .unauthorized()));
-                }
-                _ => {
-                    return ready(Err(AppErrorBuilder::new(
-                        StatusCode::UNAUTHORIZED.as_u16(),
-                        String::from("Your acess token is broken. Please log in again."),
-                        Some(error.to_string()),
-                    )
-                    .unauthorized()))
-                }
+        let decoded_access_token = match decoding_claim_token(ClaimsToken::Access, bearer_token) {
+            Ok(token) => token,
+            Err(err) => {
+                return ready(Err(err));
             }
-        }
-        let access_token = decoded_access_token.clone().unwrap().claims;
-        let access_token_exp = access_token.exp;
-        if get_current_utc_timestamp() > access_token_exp {
-            return ready(Err(AppErrorBuilder::<bool>::new(
-                StatusCode::UNAUTHORIZED.as_u16(),
-                String::from(
-                    "Your Access token has expired. Please refresh your access token or log in again. 1",
-                ),
-                None,
-            )
-            .internal_server_error()));
-        }
+        };
 
         ready(Ok(Self {
-            id: access_token.id,
-            username: access_token.username,
-            role: access_token.role,
-            iat: access_token.iat,
-            exp: access_token.exp,
+            id: decoded_access_token.id,
+            username: decoded_access_token.username,
+            role: decoded_access_token.role,
+            iat: decoded_access_token.iat,
+            exp: decoded_access_token.exp,
             access_token: bearer_token.to_owned(),
         }))
     }

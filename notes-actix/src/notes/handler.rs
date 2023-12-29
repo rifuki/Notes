@@ -6,7 +6,7 @@ use validator::Validate;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
-    helpers::handle_blacklist_token,
+    helpers::is_access_token_blacklisted,
     jwt::JwtAuth,
     notes::{
         models::{Note, NoteBuilder, NoteJoinUser, NoteUpdatePayload},
@@ -195,7 +195,7 @@ pub async fn get_all_notes(
     let auth_id = jwt_auth.id;
     let auth_role = jwt_auth.role;
 
-    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
         return Err(err);
     }
@@ -370,7 +370,7 @@ pub async fn create_note(
 
     let auth_id = jwt_auth.id;
 
-    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
         return Err(err);
     }
@@ -500,7 +500,7 @@ pub async fn get_note(
     let auth_id = jwt_auth.id;
     let auth_role = jwt_auth.role;
 
-    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
         return Err(err);
     }
@@ -658,7 +658,7 @@ pub async fn update_note(
     let auth_id = jwt_auth.id;
     let auth_role = jwt_auth.role;
 
-    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
         return Err(err);
     }
@@ -839,7 +839,7 @@ pub async fn delete_note(
     let auth_role = jwt_auth.role;
     let note_id = pp.into_inner().id;
 
-    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
         return Err(err);
     }

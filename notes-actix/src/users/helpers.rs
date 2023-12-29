@@ -9,42 +9,20 @@ use argon2::{
     password_hash::{rand_core::OsRng, SaltString},
     Argon2, PasswordHasher,
 };
-use chrono::Duration as ChronoDuration;
-use once_cell::sync::Lazy;
+use bb8::PooledConnection;
+use bb8_redis::{redis::AsyncCommands, RedisConnectionManager};
 use serde_json::Value as JsonValue;
 use sqlx::query as SqlxQuery;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
     helpers::check_is_https,
-    types::DbPool,
+    types::{DbPool, RedisKey},
 };
-
-pub const CHRONO_ACCESS_EXPIRED: Lazy<ChronoDuration> = Lazy::new(|| {
-    let access_token_expired = env::var("TOKEN_DURATION_ACCESS")
-        .unwrap()
-        .parse::<i64>()
-        .unwrap();
-    ChronoDuration::seconds(access_token_expired)
-});
-pub const CHRONO_REFRESH_EXPIRED: Lazy<ChronoDuration> = Lazy::new(|| {
-    let refresh_token_expired = env::var("TOKEN_DURATION_REFRESH")
-        .unwrap()
-        .parse::<i64>()
-        .unwrap();
-    ChronoDuration::seconds(refresh_token_expired)
-});
 
 pub fn purge_expired_refresh_token_cookie(cookie_name: &str, message: &str) -> HttpResponse {
     let err_status_code = StatusCode::UNAUTHORIZED;
-    let app_error_builder: AppErrorBuilder<bool> = AppErrorBuilder {
-        code: err_status_code.as_u16(),
-        message: message.to_string(),
-        details: None,
-    };
-
     let (secure, same_site) = check_is_https();
-    let response_body: JsonValue = app_error_builder.into();
     let boo_cookie = Cookie::build(cookie_name, "")
         .secure(secure)
         .same_site(same_site)
@@ -52,6 +30,12 @@ pub fn purge_expired_refresh_token_cookie(cookie_name: &str, message: &str) -> H
         .path("/")
         .expires(CookieTime::OffsetDateTime::now_utc())
         .finish();
+    let app_error_builder: AppErrorBuilder<bool> = AppErrorBuilder {
+        code: err_status_code.as_u16(),
+        message: message.to_string(),
+        details: None,
+    };
+    let response_body: JsonValue = app_error_builder.into();
     HttpResponse::build(err_status_code)
         .cookie(boo_cookie)
         .json(response_body)
@@ -103,4 +87,55 @@ pub fn hashing_password(password: &str) -> Result<String, AppError> {
         })?;
 
     Ok(hashed_password.to_string())
+}
+
+pub async fn blacklisting_redis_token(
+    redis_pool: &mut PooledConnection<'_, RedisConnectionManager>,
+    redis_key: RedisKey,
+    auth_id: i32,
+    token: &str,
+) -> Result<bool, AppError> {
+    let key = match redis_key {
+        RedisKey::BlacklistAccessToken => RedisKey::BlacklistAccessToken.to_string(),
+        RedisKey::BlacklistRefreshToken => RedisKey::BlacklistRefreshToken.to_string(),
+    };
+
+    let key = format!("{}-{}", key, auth_id);
+    let expired_token = match redis_key {
+        RedisKey::BlacklistAccessToken => env::var("TOKEN_DURATION_ACCESS")
+            .unwrap()
+            .parse::<u64>()
+            .unwrap(),
+        RedisKey::BlacklistRefreshToken => env::var("TOKEN_DURATION_REFRESH")
+            .unwrap()
+            .parse::<u64>()
+            .unwrap(),
+    };
+
+    let blacklisting_token = redis_pool
+        .set_ex::<_, _, bool>(key, token, expired_token)
+        .await
+        .map_err(|err| {
+            log::error!(
+                "[blacklisting_access_token] Error setting token to redis. {}",
+                err
+            );
+            AppErrorBuilder::new(
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                String::from("Failed to set token to redis."),
+                Some(err.to_string()),
+            )
+            .internal_server_error()
+        })?;
+
+    if !blacklisting_token {
+        return Err(AppErrorBuilder::<bool>::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            String::from("Failed to blacklisting token."),
+            None,
+        )
+        .internal_server_error());
+    }
+
+    Ok(blacklisting_token)
 }

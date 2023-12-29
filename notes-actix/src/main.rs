@@ -1,7 +1,17 @@
 use std::env;
 
 use actix_cors::Cors;
-use actix_web::{get, middleware::NormalizePath, web, App, HttpResponse, HttpServer};
+use actix_web::{
+    get,
+    middleware::{Logger, NormalizePath},
+    web, App, HttpResponse, HttpServer,
+};
+use utoipa::{
+    openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
+    Modify, OpenApi,
+};
+use utoipa_swagger_ui::SwaggerUi;
+
 use notes_actix::{
     notes::{
         handler::{
@@ -31,11 +41,6 @@ use notes_actix::{
     },
     utils::{establish_database_pool, initialize_redis_pool},
 };
-use utoipa::{
-    openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
-    Modify, OpenApi,
-};
-use utoipa_swagger_ui::SwaggerUi;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -53,7 +58,8 @@ async fn main() -> std::io::Result<()> {
         .parse::<u16>()
         .expect("Failed to parse APP_PORT");
     let db_url = env::var("DATABASE_URL").expect("Env DATABASE_URL must be set first.");
-
+    let redis_port = env::var("REDIS_PORT").expect("Env REDIS_PORT is not set.");
+    let redis_url = format!("redis://127.0.0.1:{}", redis_port);
     // Checking env variables for forward compatibility.
     env::var("SECRET_KEY_ACCESS").unwrap_or_else(|_| panic!("Env SECRET_KEY_ACCESS is not set."));
     env::var("SECRET_KEY_REFRESH").unwrap_or_else(|_| panic!("Env SECRET_KEY_REFRESH is not set."));
@@ -64,19 +70,16 @@ async fn main() -> std::io::Result<()> {
     env::var("TOKEN_DURATION_REFRESH")
         .unwrap_or_else(|_| panic!("Env TOKEN_DURATION_REFRESH is not set."))
         .parse::<i64>()
-        .expect("Failed to parse TOKEN_DURATION_ACCESS.");
+        .expect("Failed to parse TOKEN_DURATION_REFRESH.");
     env::var("HTTPS")
         .unwrap_or(String::from("false"))
         .to_lowercase()
         .parse::<bool>()
         .unwrap();
     // End of Checking env variables for forward compatibility.
-
-    let redis_port = env::var("REDIS_PORT").expect("Env REDIS_PORT is not set.");
-    let redis_url = format!("redis://127.0.0.1:{}", redis_port);
     let redis_pool = initialize_redis_pool(&redis_url).await;
-
     let db_pool = establish_database_pool(&db_url).await;
+
     sqlx::migrate!("./migrations")
         .run(&db_pool)
         .await
@@ -133,7 +136,7 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .app_data(web::Data::new(app_state.clone()))
-            // .wrap(Logger::default())
+            .wrap(Logger::default())
             .wrap(cors)
             .service(
                 SwaggerUi::new("/docs/{_:.*}").url("/api-docs/openapi.json", ApiDoc::openapi()),

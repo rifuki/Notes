@@ -6,7 +6,7 @@ use sqlx::postgres::PgPool;
 pub type DbPool = PgPool;
 pub type RedisPool = Bb8Pool<RedisConnectionManager>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AppState {
     pub db_pool: DbPool,
     pub redis_pool: RedisPool,
@@ -36,13 +36,20 @@ impl UserRole {
 }
 
 pub enum RedisKey {
-    BlacklistToken,
+    BlacklistAccessToken,
+    BlacklistRefreshToken,
 }
 
 impl RedisKey {
     pub fn to_string(&self) -> String {
         match *self {
-            Self::BlacklistToken => String::from("bcx"),
+            Self::BlacklistAccessToken => String::from("x!act"),
+            Self::BlacklistRefreshToken => String::from("x!rft")
         }
     }
+}
+
+pub enum ClaimsToken {
+    Access,
+    Refresh
 }

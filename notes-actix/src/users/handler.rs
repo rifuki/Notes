@@ -9,25 +9,23 @@ use argon2::{
     password_hash::{rand_core::OsRng, SaltString},
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
 };
-use bb8_redis::redis::AsyncCommands;
-use chrono::Utc;
-use jsonwebtoken::{
-    decode as JwtDecode, encode as JwtEncode, errors::ErrorKind as JwtErrorKind, Algorithm,
-    DecodingKey, EncodingKey, Header, Validation,
-};
+use jsonwebtoken::{decode as JwtDecode, Algorithm, DecodingKey, Validation};
 use serde_json::json;
 use sqlx::{query as SqlxQuery, query_as as SqlxQueryAs};
 use validator::Validate;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
-    helpers::{check_is_https, handle_blacklist_token},
+    helpers::{
+        check_is_https, decoding_claim_token, encoding_claim_token, get_bearer_authorization_token,
+        is_access_token_blacklisted,
+    },
     jwt::{validate_user_access_right, JwtAuth},
-    types::{AppState, Claims, RedisKey, UserRole},
+    types::{AppState, Claims, ClaimsToken, RedisKey, UserRole},
     users::{
         helpers::{
-            hashing_password, is_username_taken, purge_expired_refresh_token_cookie,
-            CHRONO_ACCESS_EXPIRED, CHRONO_REFRESH_EXPIRED,
+            blacklisting_redis_token, hashing_password, is_username_taken,
+            purge_expired_refresh_token_cookie,
         },
         models::{User, UserClaims, UserLoginPayload, UserRegisterPayload, UserUpdatePayload},
         types::{DeleteUserPathParams, GetUserPathParams, UpdateUserPathParams},
@@ -162,87 +160,31 @@ pub async fn auth_login(
         exp: 0,
     };
     // Create a new JWT access token.
-    let secret_key_access = env::var("SECRET_KEY_ACCESS").unwrap();
-    let claims_access_token = Claims {
-        exp: Utc::now()
-            .naive_utc()
-            .checked_add_signed(*CHRONO_ACCESS_EXPIRED)
-            .ok_or_else(|| {
-                log::error!("[claims_access_token] Failed to create a new claims access token.");
-                AppErrorBuilder::<bool>::new(
-                    StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                    String::from("Failed to calculate refresh token expiration."),
-                    None,
-                )
-                .internal_server_error()
-            })?
-            .timestamp(),
-        ..claims.clone()
-    };
-    let encoded_access_token = JwtEncode(
-        &Header::default(),
-        &claims_access_token,
-        &EncodingKey::from_secret(&secret_key_access.as_ref()),
-    )
-    .map_err(|err| {
-        log::error!(
-            "[encoded_access_token] Failed to encode access token: {}",
-            err
-        );
-        AppErrorBuilder::new(
-            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            String::from("Failed to encode access token."),
-            Some(err.to_string()),
-        )
-        .internal_server_error()
-    })?;
+    let encoded_access_token = encoding_claim_token(
+        ClaimsToken::Access,
+        claims.id,
+        &claims.username,
+        &claims.role,
+    )?;
     // Create a new JWT refresh token.
-    let secret_key_refresh = env::var("SECRET_KEY_REFRESH").unwrap();
-    let claims_refresh_token = Claims {
-        exp: Utc::now()
-            .naive_utc()
-            .checked_add_signed(*CHRONO_REFRESH_EXPIRED)
-            .ok_or_else(|| {
-                log::error!("[claims_refresh_token] Failed to create a new claims refresh token.");
-                AppErrorBuilder::<bool>::new(
-                    StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                    String::from("Failed to calculate refresh token expiration."),
-                    None,
-                )
-                .internal_server_error()
-            })?
-            .timestamp(),
-        ..claims
-    };
-    let encoded_refresh_token = JwtEncode(
-        &Header::default(),
-        &claims_refresh_token,
-        &EncodingKey::from_secret(&secret_key_refresh.as_ref()),
-    )
-    .map_err(|err| {
-        log::error!(
-            "[encoded_refresh_token] Failed to encode refresh token: {}",
-            err
-        );
-        AppErrorBuilder::new(
-            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            String::from("Failed to encode refresh token."),
-            Some(err.to_string()),
-        )
-        .internal_server_error()
-    })?;
+    let encoded_refresh_token = encoding_claim_token(
+        ClaimsToken::Refresh,
+        claims.id,
+        &claims.username,
+        &claims.role,
+    )?;
 
     // Storing encoded refresh token to database.
-    let user_updated_refresh_token = SqlxQueryAs::<_, UserClaims>(
+    let set_refresh_token = SqlxQueryAs::<_, UserClaims>(
         "UPDATE users SET refresh_token = $1 WHERE id = $2 RETURNING *;",
     )
     .bind(&encoded_refresh_token)
     .bind(&stored_user.id)
-    .fetch_one(db_pool)
+    .fetch_optional(db_pool)
     .await
     .map_err(|err| {
         log::error!(
-            "[user_updated_refresh_token] Error updating refresh token for user. {}",
+            "[set_refresh_token] Error updating user refresh token. {}",
             err
         );
         AppErrorBuilder::new(
@@ -251,6 +193,14 @@ pub async fn auth_login(
             Some(err.to_string()),
         )
         .internal_server_error()
+    })?
+    .ok_or_else(|| {
+        AppErrorBuilder::<bool>::new(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            String::from("Error updating user refresh token."),
+            None,
+        )
+        .not_found()
     })?;
 
     // Constructs the response body to be sent back after a successful giving cookie update. 🍪🥰.
@@ -259,7 +209,7 @@ pub async fn auth_login(
     let response_body = json!({
         "code": status_code.as_u16(),
         "message": "Successfully logged in.",
-        "user": user_updated_refresh_token,
+        "user": set_refresh_token,
         "accessToken": encoded_access_token,
     });
     let yay_cookie = Cookie::build("refreshToken", &encoded_refresh_token)
@@ -341,7 +291,7 @@ pub async fn auth_refresh(
     app_state: web::Data<AppState>,
 ) -> Result<HttpResponse, AppError> {
     // Checking if cookie refresh token is set.
-    let refresh_token_cookie = req
+    let cookie_refresh_token = req
         .cookie("refreshToken")
         .map(|cookie| cookie.value().to_string())
         .ok_or_else(|| {
@@ -354,40 +304,12 @@ pub async fn auth_refresh(
         })?;
 
     // Decoding refresh token from cookie.
-    let secret_key_refresh = env::var("SECRET_KEY_REFRESH").unwrap();
-    let decoded_refresh_token = JwtDecode::<Claims>(
-        &refresh_token_cookie,
-        &DecodingKey::from_secret(&secret_key_refresh.as_ref()),
-        &Validation::new(Algorithm::HS256),
-    )
-    // Handle refresh token expired.
-    .map_err(|err| match err.kind() {
-        JwtErrorKind::ExpiredSignature => AppErrorBuilder::<bool>::new(
-            StatusCode::UNAUTHORIZED.as_u16(),
-            String::from("Your session has expired. Please log in again."),
-            None,
-        )
-        .unauthorized(),
-        _ => AppErrorBuilder::new(
-            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            String::from("Refresh token is broken. Please log in again."),
-            Some(err.to_string()),
-        )
-        .unauthorized(),
-    })?;
-    if get_current_utc_timestamp() > decoded_refresh_token.claims.exp {
-        return Err(AppErrorBuilder::<bool>::new(
-            StatusCode::UNAUTHORIZED.as_u16(),
-            String::from("Your session has expired. Please log in again."),
-            None,
-        )
-        .unauthorized());
-    }
+    let _ = decoding_claim_token(ClaimsToken::Refresh, &cookie_refresh_token)?;
 
     // Getting stored_user based on refresh token.
     let db_pool = &app_state.get_ref().db_pool;
     let stored_user = SqlxQueryAs::<_, UserClaims>("SELECT * FROM users WHERE refresh_token = $1")
-        .bind(refresh_token_cookie)
+        .bind(&cookie_refresh_token)
         .fetch_optional(db_pool)
         .await
         .map_err(|err| {
@@ -409,43 +331,12 @@ pub async fn auth_refresh(
         })?;
 
     // Generate a new JWT access token.
-    let claims_access_token = Claims {
-        id: stored_user.id,
-        username: stored_user.username.to_owned(),
-        role: stored_user.role.clone(),
-        iat: get_current_utc_timestamp(),
-        exp: Utc::now()
-            .naive_utc()
-            .checked_add_signed(*CHRONO_ACCESS_EXPIRED)
-            .ok_or_else(|| {
-                log::error!("[claims_access_token] Failed to create a new claims access token.");
-                AppErrorBuilder::<bool>::new(
-                    StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                    String::from("Failed to calculate access token expiration."),
-                    None,
-                )
-                .internal_server_error()
-            })?
-            .timestamp(),
-    };
-    let secret_key_access = env::var("SECRET_KEY_ACCESS").unwrap();
-    let encoded_access_token = JwtEncode(
-        &Header::default(),
-        &claims_access_token,
-        &EncodingKey::from_secret(&secret_key_access.as_ref()),
-    )
-    .map_err(|err| {
-        log::error!(
-            "[encoded_access_token] Failed to generate access token. {}",
-            err
-        );
-        AppErrorBuilder::new(
-            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            String::from("Failed to encode access token."),
-            Some(err.to_string()),
-        )
-        .internal_server_error()
-    })?;
+    let encoded_access_token = encoding_claim_token(
+        ClaimsToken::Access,
+        stored_user.id,
+        &stored_user.username,
+        &stored_user.role,
+    )?;
 
     // Constructs the response body to be sent back after a successful refreshed token. 🔥
     let status_code = StatusCode::OK;
@@ -458,7 +349,7 @@ pub async fn auth_refresh(
     Ok(HttpResponse::build(status_code).json(response_body))
 }
 
-/// Logout the user, revoking access and deleting the refresh token from the database.
+/// eLogout the user, revoking access and deleting the refresh token from the database.
 ///
 /// This endpoint is used to facilitate the logout process for a user. Upon successful logout, the user's access is revoked, and their associated refresh token is deleted from the database. Additionally, the cookie containing the refresh token is expired.
 ///
@@ -533,10 +424,15 @@ pub async fn auth_logout(
     app_state: web::Data<AppState>,
     req: HttpRequest,
 ) -> Result<HttpResponse, AppError> {
-    let refresh_token_name = "refreshToken";
+    let bearer_token = match get_bearer_authorization_token(&req) {
+        Ok(token) => token,
+        Err(err) => return Err(err),
+    };
+
+    let cookie_refresh_token_name = "refreshToken";
     // Getting the refresh token from the cookie.
-    let refresh_token_cookie = req
-        .cookie(refresh_token_name)
+    let cookie_refresh_token = req
+        .cookie(cookie_refresh_token_name)
         .map(|cookie| cookie.value().to_string())
         .ok_or_else(|| {
             AppErrorBuilder::<bool>::new(
@@ -549,74 +445,87 @@ pub async fn auth_logout(
 
     // Set the refresh token to null in db.
     let db_pool = &app_state.get_ref().db_pool;
-    let set_refresh_token_null = SqlxQueryAs::<_, User>(
+    let nulling_refresh_token = SqlxQueryAs::<_, User>(
         "UPDATE users SET refresh_token = NULL WHERE refresh_token = $1 RETURNING *;",
     )
-    .bind(&refresh_token_cookie)
+    .bind(&cookie_refresh_token)
     .fetch_optional(db_pool)
     .await
     .map_err(|err| {
         log::error!(
-            "[set_refresh_token_null] Error updating refresh token to null. {}",
+            "[nulling_refresh_token] Error updating refresh token to null. {}",
             err
         );
         AppErrorBuilder::new(
             StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            String::from("Failed to set refresh token."),
+            String::from("Failed to updating refresh token."),
             Some(err.to_string()),
         )
         .internal_server_error()
     })?;
 
     // If refresh token in db is not found, return error 🚮🍪.
-    if let None = set_refresh_token_null {
+    if let None = nulling_refresh_token {
         return Ok(purge_expired_refresh_token_cookie(
-            refresh_token_name,
+            cookie_refresh_token_name,
             "You're already logged out. 2",
         ));
     }
 
+    // Must be
     let secret_key_refresh = env::var("SECRET_KEY_REFRESH").unwrap();
-    let encoded_refresh_token = JwtDecode::<Claims>(
-        &refresh_token_cookie,
+    let decoded_refresh_token = JwtDecode::<Claims>(
+        &cookie_refresh_token,
         &DecodingKey::from_secret(&secret_key_refresh.as_ref()),
         &Validation::new(Algorithm::HS256),
     );
     // Handle refresh token expired 🚮🍪.
-    if let Err(_) = encoded_refresh_token {
+    if let Err(_) = decoded_refresh_token {
         return Ok(purge_expired_refresh_token_cookie(
-            refresh_token_name,
+            cookie_refresh_token_name,
             "You're already logged out. 4",
         ));
-    } else if get_current_utc_timestamp() > encoded_refresh_token.unwrap().claims.exp {
+    } else if get_current_utc_timestamp() > decoded_refresh_token.unwrap().claims.exp {
         return Ok(purge_expired_refresh_token_cookie(
-            refresh_token_name,
+            cookie_refresh_token_name,
             "You're already logged out. 3",
         ));
     }
 
-    let stored_user = set_refresh_token_null.unwrap();
-    let user = json!({
-        "id": stored_user.id,
-        "username": stored_user.username,
-        "refresh_token": stored_user.refresh_token
-    });
+    let stored_user = nulling_refresh_token.unwrap();
+    let mut redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
+
+    let decoded_access_token = decoding_claim_token(ClaimsToken::Access, bearer_token);
+    if let Ok(claim) = decoded_access_token {
+        let _ = blacklisting_redis_token(
+            &mut redis_pool,
+            RedisKey::BlacklistAccessToken,
+            claim.id,
+            bearer_token,
+        )
+        .await;
+    };
 
     // Constructs the response body to be sent back after a successful burn a cookie. 🔥🍪.
-    let (secure, same_site) = check_is_https();
     let status_code = StatusCode::OK;
-    let response_body = json!({
-        "code": status_code.as_u16(),
-        "message": "Successfully logged out.",
-        "user": user
-    });
-    let boo_cookie = Cookie::build("refreshToken", "")
+    let (secure, same_site) = check_is_https();
+    let boo_cookie = Cookie::build(cookie_refresh_token_name, "")
         .secure(secure)
         .same_site(same_site)
         .http_only(true)
         .path("/")
         .expires(CookieTime::OffsetDateTime::now_utc())
         .finish();
+    let user = json!({
+        "id": stored_user.id,
+        "username": stored_user.username,
+        "refresh_token": stored_user.refresh_token
+    });
+    let response_body = json!({
+        "code": status_code.as_u16(),
+        "message": "Successfully logged out.",
+        "user": user
+    });
     Ok(HttpResponse::build(status_code)
         .cookie(boo_cookie)
         .json(response_body))
@@ -916,7 +825,7 @@ pub async fn get_all_users(
 
     let auth_id = jwt_auth.id;
 
-    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
         return Err(err);
     }
@@ -1055,7 +964,7 @@ pub async fn get_user(
 
     let auth_id = jwt_auth.id;
 
-    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
         return Err(err);
     }
@@ -1194,7 +1103,7 @@ pub async fn update_user(
 
     let auth_id = jwt_auth.id;
 
-    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
         return Err(err);
     }
@@ -1404,7 +1313,7 @@ pub async fn delete_user(
 
     let auth_id = jwt_auth.id;
 
-    let is_token_blacklisted = handle_blacklist_token(auth_id, redis_pool).await;
+    let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
         return Err(err);
     }
@@ -1438,54 +1347,15 @@ pub async fn delete_user(
         })?;
 
     let mut redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
-    let key_redis = format!("{}-{}", RedisKey::BlacklistToken.to_string(), &jwt_auth.id);
-    let expired_access_token = env::var("TOKEN_DURATION_ACCESS")
-        .map_err(|err| {
-            log::error!("[expired_access_token] Error getting token: {}", err);
-            AppErrorBuilder::new(
-                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                format!(
-                    "Failed to get TOKEN_DURATION_ACCESS environment variable: {}",
-                    err
-                ),
-                Some(err.to_string()),
-            )
-            .internal_server_error()
-        })?
-        .parse::<u64>()
-        .map_err(|err| {
-            log::error!("[expired_access_token] Error parse token: {}", err);
-            AppErrorBuilder::new(
-                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                format!(
-                    "Failed to parse TOKEN_DURATION_ACCESS environment variable: {}",
-                    err
-                ),
-                Some(err.to_string()),
-            )
-            .internal_server_error()
-        })?;
+    // Blacklist the current user access_token.
+    let _ = blacklisting_redis_token(
+        &mut redis_pool,
+        RedisKey::BlacklistAccessToken,
+        jwt_auth.id,
+        &jwt_auth.access_token,
+    )
+    .await;
 
-    let blacklisting_token = redis_pool
-        .set_ex::<_, _, bool>(key_redis, &jwt_auth.access_token, expired_access_token)
-        .await
-        .map_err(|err| {
-            log::error!("[blacklisting_token] Error setting token to redis. {}", err);
-            AppErrorBuilder::new(
-                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                String::from("Failed to set access token in Redis."),
-                Some(err.to_string()),
-            )
-            .internal_server_error()
-        })?;
-    if !blacklisting_token {
-        return Err(AppErrorBuilder::<bool>::new(
-            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            format!("Failed to set access token to blacklist"),
-            None,
-        )
-        .internal_server_error());
-    }
     // Constructs the response body to be seVnt back after a successful user delete. 🔥
     let status_code = StatusCode::OK;
     let response_body = json!({

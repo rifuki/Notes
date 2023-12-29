@@ -1,8 +1,9 @@
 use bb8::Pool as Bb8Pool;
 use bb8_redis::RedisConnectionManager;
-use chrono::Utc;
+use chrono::{Duration as ChronoDuration, Utc};
+use once_cell::sync::Lazy;
 use sqlx::postgres::PgPoolOptions;
-use std::time::Duration;
+use std::{env, time::Duration};
 
 use crate::types::{DbPool, RedisPool};
 
@@ -26,3 +27,19 @@ pub async fn initialize_redis_pool(redis_url: &str) -> RedisPool {
 pub fn get_current_utc_timestamp() -> i64 {
     Utc::now().naive_utc().timestamp()
 }
+
+pub const CHRONO_ACCESS_DURATION: Lazy<ChronoDuration> = Lazy::new(|| {
+    let access_token_duration = env::var("TOKEN_DURATION_ACCESS")
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    ChronoDuration::seconds(access_token_duration)
+});
+
+pub const CHRONO_REFRESH_DURATION: Lazy<ChronoDuration> = Lazy::new(|| {
+    let refresh_token_duration = env::var("TOKEN_DURATION_REFRESH")
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    ChronoDuration::seconds(refresh_token_duration)
+});
