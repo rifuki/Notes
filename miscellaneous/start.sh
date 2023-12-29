@@ -3,11 +3,11 @@
 if [ -e ../.env.example ]; then
     echo '.env.example found!'
     echo 'Rename .env.example to .env'
-    mv .env.example .env
+    mv ../.env.example ../.env
 fi
 if [ -e ../.env ]; then
     echo '.env found!'
-    source .env
+    source ../.env
 else
     echo 'Please set .env first!' 
     exit 1
