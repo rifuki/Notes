@@ -1,6 +1,6 @@
 server {
     listen 80;
-    server_name actix.notes.rifuki.xyz www.actix.notes.rifuki.xyz
+    server_name actix.notes.rifuki.xyz www.actix.notes.rifuki.xyz;
 
     location / {
         proxy_pass http://localhost:9001;
