@@ -15,7 +15,7 @@ else
 fi
 
 # Docker
-if ! [ -f /etc/apt/keyrings/docker.gpg ]; then
+if ! [ -f /usr/bin/docker  ]; then
     sudo apt install ca-certificates curl gnupg -y
     sudo install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -44,9 +44,14 @@ if ! [ -f /usr/sbin/nginx ]; then
 fi
 
 if ! [ -f /etc/nginx/sites-available/actix ]; then
-    sudo cp ./actix /etc/nginx/sites-available/
-    sudo ln -s /etc/nginx/sites-available/actix /etc/nginx/sites-enabled/actix
+    sudo cp ./miscellaneous/actix /etc/nginx/sites-available/
+    sudo ln -s /etc/nginx/sites-available/actix /etc/nginx/sites-enabled/
 fi
+if ! [ -f /etc/nginx/sites-available/pgadmin ]; then
+    sudo cp ./miscellaneous/pgadmin /etc/nginx/sites-available/
+    sudo ln -s /etc/nginx/sites-available/pgadmin /etc/nginx/sites-enabled/
+fi
+
 if ! [ -f /usr/bin/certbot ]; then
     sudo apt remove certbot -y
     sudo apt install snapd -y
@@ -64,8 +69,8 @@ if ! [ -f /etc/letsencrypt/renewal/pgadmin.notes.rifuki.xyz.conf ]; then
     sudo systemctl restart nginx
 fi
 
-# echo "y" | sudo ufw enable -- -y
-yes | sudo ufw enable -- -y
+# echo "y" | sudo ufw enable
+yes | sudo ufw enable
 sudo ufw allow 'OpenSSH'
 sudo ufw allow 'Nginx Full'
 sudo ufw status
