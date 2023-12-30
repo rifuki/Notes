@@ -2,16 +2,12 @@
 
 if [ -f .env.example ]; then
     echo '.env.example found!'
-    echo 'Rename .env.example to .env'
-    mv .env.example .env
-fi
-
-if [ -f .env ]; then
-    echo '.env found!'
-    source .env
-else
-    echo 'Please set .env first!' 
-    exit 1
+    if ! [ -f .env ]; then
+        echo 'Clone .env.example to .env'
+        cp .env.example .env
+    else
+        echo '.env found!'
+    fi
 fi
 
 # Docker
@@ -69,8 +65,13 @@ if ! [ -f /etc/letsencrypt/renewal/pgadmin.notes.rifuki.xyz.conf ]; then
     sudo systemctl restart nginx
 fi
 
-# echo "y" | sudo ufw enable
-yes | sudo ufw enable
-sudo ufw allow 'OpenSSH'
-sudo ufw allow 'Nginx Full'
-sudo ufw status
+ufw_status=$(sudo ufw status)
+if [[ $ufw_status != *"Status: active"* ]]; then
+    # echo "y" | sudo ufw enable
+    yes | sudo ufw enable
+    sudo ufw allow 'OpenSSH'
+    sudo ufw allow 'Nginx Full'
+    sudo ufw status
+else
+    echo "UFW already active."
+fi

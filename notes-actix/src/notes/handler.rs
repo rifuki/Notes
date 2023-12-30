@@ -192,8 +192,8 @@ pub async fn get_all_notes(
 ) -> Result<HttpResponse, AppError> {
     let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
 
-    let auth_id = jwt_auth.id;
-    let auth_role = jwt_auth.role;
+    let auth_id = jwt_auth.aud;
+    let auth_role = jwt_auth.sub.role;
 
     let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
@@ -368,7 +368,7 @@ pub async fn create_note(
 ) -> Result<HttpResponse, AppError> {
     let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
 
-    let auth_id = jwt_auth.id;
+    let auth_id = jwt_auth.aud;
 
     let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
@@ -497,8 +497,8 @@ pub async fn get_note(
     let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
 
     let note_id = pp.into_inner().id;
-    let auth_id = jwt_auth.id;
-    let auth_role = jwt_auth.role;
+    let auth_id = jwt_auth.aud;
+    let auth_role = jwt_auth.sub.role;
 
     let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
@@ -655,8 +655,8 @@ pub async fn update_note(
     let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
 
     let note_id = pp.into_inner().id;
-    let auth_id = jwt_auth.id;
-    let auth_role = jwt_auth.role;
+    let auth_id = jwt_auth.aud;
+    let auth_role = jwt_auth.sub.role;
 
     let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
@@ -835,8 +835,8 @@ pub async fn delete_note(
 ) -> Result<HttpResponse, AppError> {
     let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
 
-    let auth_id = jwt_auth.id;
-    let auth_role = jwt_auth.role;
+    let auth_id = jwt_auth.aud;
+    let auth_role = jwt_auth.sub.role;
     let note_id = pp.into_inner().id;
 
     let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;

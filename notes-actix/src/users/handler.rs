@@ -33,6 +33,8 @@ use crate::{
     utils::get_current_utc_timestamp,
 };
 
+use super::helpers::ClaimsBuilder;
+
 /// Authenticates user credentials and generates access tokens for accessing protected routes.
 ///
 /// This endpoint allows users to log in by providing their username and password.
@@ -152,27 +154,16 @@ pub async fn auth_login(
             .unauthorized()
         })?;
 
-    let claims = Claims {
-        id: stored_user.id,
-        username: stored_user.username.to_owned(),
+    let claims = ClaimsBuilder {
+        aud: stored_user.id,
+        email: stored_user.email,
         role: stored_user.role,
-        iat: get_current_utc_timestamp(),
-        exp: 0,
+        username: stored_user.username,
     };
     // Create a new JWT access token.
-    let encoded_access_token = encoding_claim_token(
-        ClaimsToken::Access,
-        claims.id,
-        &claims.username,
-        &claims.role,
-    )?;
+    let encoded_access_token = encoding_claim_token(ClaimsToken::Access, claims.clone())?;
     // Create a new JWT refresh token.
-    let encoded_refresh_token = encoding_claim_token(
-        ClaimsToken::Refresh,
-        claims.id,
-        &claims.username,
-        &claims.role,
-    )?;
+    let encoded_refresh_token = encoding_claim_token(ClaimsToken::Refresh, claims)?;
 
     // Storing encoded refresh token to database.
     let set_refresh_token = SqlxQueryAs::<_, UserClaims>(
@@ -330,13 +321,14 @@ pub async fn auth_refresh(
             .unauthorized()
         })?;
 
+    let claims = ClaimsBuilder {
+        aud: stored_user.id,
+        email: stored_user.email.clone(),
+        role: stored_user.role.clone(),
+        username: stored_user.username.clone(),
+    };
     // Generate a new JWT access token.
-    let encoded_access_token = encoding_claim_token(
-        ClaimsToken::Access,
-        stored_user.id,
-        &stored_user.username,
-        &stored_user.role,
-    )?;
+    let encoded_access_token = encoding_claim_token(ClaimsToken::Access, claims)?;
 
     // Constructs the response body to be sent back after a successful refreshed token. 🔥
     let status_code = StatusCode::OK;
@@ -500,7 +492,7 @@ pub async fn auth_logout(
         let _ = blacklisting_redis_token(
             &mut redis_pool,
             RedisKey::BlacklistAccessToken,
-            claim.id,
+            claim.aud,
             bearer_token,
         )
         .await;
@@ -823,7 +815,7 @@ pub async fn get_all_users(
 ) -> Result<HttpResponse, AppError> {
     let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
 
-    let auth_id = jwt_auth.id;
+    let auth_id = jwt_auth.aud;
 
     let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
@@ -831,7 +823,7 @@ pub async fn get_all_users(
     }
 
     // Handle if not admin users.
-    let auth_role = &jwt_auth.role;
+    let auth_role = &jwt_auth.sub.role;
     if auth_role != &UserRole::Admin.to_string() {
         return Err(AppErrorBuilder::<bool>::new(
             StatusCode::FORBIDDEN.as_u16(),
@@ -962,7 +954,7 @@ pub async fn get_user(
 ) -> Result<HttpResponse, AppError> {
     let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
 
-    let auth_id = jwt_auth.id;
+    let auth_id = jwt_auth.aud;
 
     let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
@@ -1101,7 +1093,7 @@ pub async fn update_user(
 ) -> Result<HttpResponse, AppError> {
     let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
 
-    let auth_id = jwt_auth.id;
+    let auth_id = jwt_auth.aud;
 
     let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
@@ -1311,7 +1303,7 @@ pub async fn delete_user(
 ) -> Result<HttpResponse, AppError> {
     let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
 
-    let auth_id = jwt_auth.id;
+    let auth_id = jwt_auth.aud;
 
     let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
@@ -1351,7 +1343,7 @@ pub async fn delete_user(
     let _ = blacklisting_redis_token(
         &mut redis_pool,
         RedisKey::BlacklistAccessToken,
-        jwt_auth.id,
+        jwt_auth.aud,
         &jwt_auth.access_token,
     )
     .await;

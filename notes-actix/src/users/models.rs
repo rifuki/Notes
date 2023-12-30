@@ -38,10 +38,12 @@ pub struct User {
 pub struct UserClaims {
     #[schema(example = "1")]
     pub id: i32,
-    #[schema(example = "john")]
-    pub username: String,
+    #[schema(example = "johndoe@gmail.com")]
+    pub email: Option<String>,
     #[schema(example = "user")]
     pub role: String,
+    #[schema(example = "john")]
+    pub username: String,
 }
 
 #[derive(Deserialize, ToSchema, Validate)]

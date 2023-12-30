@@ -12,11 +12,12 @@ use jsonwebtoken::{
     decode as JwtDecode, encode as JwtEncode, errors::ErrorKind as JwtErrorKind, Algorithm,
     DecodingKey, EncodingKey, Header, Validation,
 };
+use uuid::Uuid;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
-    types::{Claims, ClaimsToken, RedisKey},
-    utils::{get_current_utc_timestamp, CHRONO_ACCESS_DURATION, CHRONO_REFRESH_DURATION},
+    types::{Claims, ClaimsToken, RedisKey, SubClaims},
+    utils::{get_current_utc_timestamp, CHRONO_ACCESS_DURATION, CHRONO_REFRESH_DURATION}, users::helpers::ClaimsBuilder,
 };
 
 pub async fn is_access_token_blacklisted(
@@ -96,9 +97,7 @@ pub fn get_bearer_authorization_token(req: &HttpRequest) -> Result<&str, AppErro
 
 pub fn encoding_claim_token(
     token: ClaimsToken,
-    id: i32,
-    username: &str,
-    role: &str,
+    claims: ClaimsBuilder
 ) -> Result<String, AppError> {
     let chrono_token_duration = match token {
         ClaimsToken::Access => *CHRONO_ACCESS_DURATION,
@@ -119,11 +118,16 @@ pub fn encoding_claim_token(
         .timestamp();
 
     let claims_token = Claims {
-        id: id,
-        username: username.to_owned(),
-        role: role.to_string(),
-        iat: get_current_utc_timestamp(),
+        aud: claims.aud,
         exp: exp_token,
+        iat: get_current_utc_timestamp(),
+        iss: String::from("actix.notes.rifuki.xyz"),
+        jti: Uuid::new_v4(),
+        sub: SubClaims {
+            username: claims.username,
+            email: claims.email,
+            role: claims.role
+        },
     };
 
     let secret_key = match token {

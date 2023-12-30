@@ -2,6 +2,7 @@ use bb8::Pool as Bb8Pool;
 use bb8_redis::RedisConnectionManager;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPool;
+use uuid::Uuid;
 
 pub type DbPool = PgPool;
 pub type RedisPool = Bb8Pool<RedisConnectionManager>;
@@ -14,11 +15,19 @@ pub struct AppState {
 
 #[derive(Serialize, Clone, Deserialize)]
 pub struct Claims {
-    pub id: i32,
-    pub username: String,
-    pub role: String,
-    pub iat: i64,
+    pub aud: i32,
     pub exp: i64,
+    pub iat: i64,
+    pub iss: String,
+    pub jti: Uuid,
+    pub sub: SubClaims,
+}
+
+#[derive(Serialize, Clone, Deserialize)]
+pub struct SubClaims {
+    pub email: Option<String>,
+    pub role: String,
+    pub username: String,
 }
 
 pub enum UserRole {
@@ -44,12 +53,12 @@ impl RedisKey {
     pub fn to_string(&self) -> String {
         match *self {
             Self::BlacklistAccessToken => String::from("x!act"),
-            Self::BlacklistRefreshToken => String::from("x!rft")
+            Self::BlacklistRefreshToken => String::from("x!rft"),
         }
     }
 }
 
 pub enum ClaimsToken {
     Access,
-    Refresh
+    Refresh,
 }

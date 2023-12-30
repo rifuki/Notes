@@ -6,6 +6,8 @@ use actix_web::{
     middleware::{Logger, NormalizePath},
     web, App, HttpResponse, HttpServer,
 };
+use log::Level;
+use simple_logger::init_with_level as LoggerWithLevel;
 use utoipa::{
     openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
     Modify, OpenApi,
@@ -44,14 +46,7 @@ use notes_actix::{
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    env::set_var("RUST_LOG", "INFO");
-    env::set_var("RUST_BACKTRACE", "1");
-    env_logger::init();
-
-    let current_dir = env::current_dir().unwrap();
-    let parent_dir = current_dir.parent().unwrap();
-    let parent_env_path = parent_dir.join(".env");
-    dotenv::from_path(parent_env_path).ok();
+    dotenv::dotenv().ok();
 
     let app_port = env::var("APP_PORT")
         .unwrap_or(String::from("80"))
@@ -79,12 +74,10 @@ async fn main() -> std::io::Result<()> {
     // End of Checking env variables for forward compatibility.
     let redis_pool = initialize_redis_pool(&redis_url).await;
     let db_pool = establish_database_pool(&db_url).await;
-
     sqlx::migrate!("./migrations")
         .run(&db_pool)
         .await
-        .expect("Error running DB migrations");
-
+        .unwrap_or_else(|err| panic!("Error running DB migrations. {}", err));
     let app_state = AppState {
         db_pool,
         redis_pool,
@@ -111,7 +104,6 @@ async fn main() -> std::io::Result<()> {
         modifiers(&SecurityAddon)
     )]
     struct ApiDoc;
-
     struct SecurityAddon;
     impl Modify for SecurityAddon {
         fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
@@ -128,6 +120,7 @@ async fn main() -> std::io::Result<()> {
         }
     }
 
+    LoggerWithLevel(Level::Info).unwrap();
     HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_header()

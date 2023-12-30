@@ -139,3 +139,11 @@ pub async fn blacklisting_redis_token(
 
     Ok(blacklisting_token)
 }
+
+#[derive(Clone)]
+pub struct ClaimsBuilder {
+    pub aud: i32, 
+    pub username: String,
+    pub role: String,
+    pub email: Option<String>,
+}

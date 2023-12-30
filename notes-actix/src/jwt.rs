@@ -2,22 +2,26 @@ use std::future::{ready, Ready};
 
 use actix_web::{dev::Payload, http::StatusCode, FromRequest, HttpRequest};
 use sqlx::query_as as SqlxQueryAs;
+use uuid::Uuid;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
     helpers::{decoding_claim_token, get_bearer_authorization_token},
-    types::{ClaimsToken, DbPool, UserRole},
+    types::{ClaimsToken, DbPool, SubClaims, UserRole},
     users::models::User,
 };
 
 pub struct JwtAuth {
-    pub id: i32,
-    pub username: String,
-    pub role: String,
-    pub iat: i64,
-    pub exp: i64,
     pub access_token: String,
+    pub aud: i32,
+    pub exp: i64,
+    pub iat: i64,
+    pub iss: String,
+    pub jti: Uuid,
+    pub sub: SubClaims,
 }
+
+pub struct Claims {}
 impl FromRequest for JwtAuth {
     type Error = AppError;
     type Future = Ready<Result<Self, Self::Error>>;
@@ -35,12 +39,17 @@ impl FromRequest for JwtAuth {
         };
 
         ready(Ok(Self {
-            id: decoded_access_token.id,
-            username: decoded_access_token.username,
-            role: decoded_access_token.role,
-            iat: decoded_access_token.iat,
-            exp: decoded_access_token.exp,
             access_token: bearer_token.to_owned(),
+            aud: decoded_access_token.aud,
+            exp: decoded_access_token.exp,
+            iat: decoded_access_token.iat,
+            iss: decoded_access_token.iss,
+            jti: decoded_access_token.jti,
+            sub: SubClaims {
+                email: decoded_access_token.sub.email,
+                role: decoded_access_token.sub.role,
+                username: decoded_access_token.sub.username,
+            },
         }))
     }
 }
@@ -51,8 +60,8 @@ pub async fn validate_user_access_right(
     user_id: i32,
 ) -> Result<User, AppError> {
     // Get the authenticated user's from token.
-    let auth_role = &jwt_auth.role;
-    let auth_id = jwt_auth.id;
+    let auth_role = &jwt_auth.sub.role;
+    let auth_id = jwt_auth.aud;
 
     // Verifying the existence of the searched user.
     let found_user = SqlxQueryAs::<_, User>("SELECT * FROM users WHERE id = $1;")
