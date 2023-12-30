@@ -2,12 +2,11 @@ use std::future::{ready, Ready};
 
 use actix_web::{dev::Payload, http::StatusCode, FromRequest, HttpRequest};
 use sqlx::query_as as SqlxQueryAs;
-use uuid::Uuid;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
     helpers::{decoding_claim_token, get_bearer_authorization_token},
-    types::{ClaimsToken, DbPool, SubClaims, UserRole},
+    types::{ClaimsToken, DbPool, UserRole},
     users::models::User,
 };
 
@@ -17,8 +16,10 @@ pub struct JwtAuth {
     pub exp: i64,
     pub iat: i64,
     pub iss: String,
-    pub jti: Uuid,
-    pub sub: SubClaims,
+    pub jti: String,
+    pub role: String,
+    pub email: Option<String>,
+    pub username: String,
 }
 
 pub struct Claims {}
@@ -45,11 +46,9 @@ impl FromRequest for JwtAuth {
             iat: decoded_access_token.iat,
             iss: decoded_access_token.iss,
             jti: decoded_access_token.jti,
-            sub: SubClaims {
-                email: decoded_access_token.sub.email,
-                role: decoded_access_token.sub.role,
-                username: decoded_access_token.sub.username,
-            },
+            email: decoded_access_token.email,
+            role: decoded_access_token.role,
+            username: decoded_access_token.username,
         }))
     }
 }
@@ -60,7 +59,7 @@ pub async fn validate_user_access_right(
     user_id: i32,
 ) -> Result<User, AppError> {
     // Get the authenticated user's from token.
-    let auth_role = &jwt_auth.sub.role;
+    let auth_role = &jwt_auth.iss;
     let auth_id = jwt_auth.aud;
 
     // Verifying the existence of the searched user.

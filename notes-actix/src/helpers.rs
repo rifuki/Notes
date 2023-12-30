@@ -16,8 +16,9 @@ use uuid::Uuid;
 
 use crate::{
     errors::{AppError, AppErrorBuilder},
-    types::{Claims, ClaimsToken, RedisKey, SubClaims},
-    utils::{get_current_utc_timestamp, CHRONO_ACCESS_DURATION, CHRONO_REFRESH_DURATION}, users::helpers::ClaimsBuilder,
+    types::{Claims, ClaimsToken, RedisKey},
+    users::helpers::ClaimsBuilder,
+    utils::{get_current_utc_timestamp, CHRONO_ACCESS_DURATION, CHRONO_REFRESH_DURATION},
 };
 
 pub async fn is_access_token_blacklisted(
@@ -95,10 +96,7 @@ pub fn get_bearer_authorization_token(req: &HttpRequest) -> Result<&str, AppErro
     Ok(bearer_token)
 }
 
-pub fn encoding_claim_token(
-    token: ClaimsToken,
-    claims: ClaimsBuilder
-) -> Result<String, AppError> {
+pub fn encoding_claim_token(token: ClaimsToken, claims: ClaimsBuilder) -> Result<String, AppError> {
     let chrono_token_duration = match token {
         ClaimsToken::Access => *CHRONO_ACCESS_DURATION,
         ClaimsToken::Refresh => *CHRONO_REFRESH_DURATION,
@@ -122,12 +120,10 @@ pub fn encoding_claim_token(
         exp: exp_token,
         iat: get_current_utc_timestamp(),
         iss: String::from("actix.notes.rifuki.xyz"),
-        jti: Uuid::new_v4(),
-        sub: SubClaims {
-            username: claims.username,
-            email: claims.email,
-            role: claims.role
-        },
+        jti: Uuid::new_v4().to_string(),
+        email: claims.email,
+        role: claims.role,
+        username: claims.username,
     };
 
     let secret_key = match token {
@@ -153,20 +149,22 @@ pub fn encoding_claim_token(
     Ok(encoded_token)
 }
 
-pub fn decoding_claim_token(token: ClaimsToken, refresh_token: &str) -> Result<Claims, AppError> {
-    let secret_key = match token {
+pub fn decoding_claim_token(claims_token: ClaimsToken, token: &str) -> Result<Claims, AppError> {
+    let secret_key = match claims_token {
         ClaimsToken::Access => env::var("SECRET_KEY_ACCESS").unwrap(),
         ClaimsToken::Refresh => env::var("SECRET_KEY_REFRESH").unwrap(),
     };
-    let error_message = match token {
+    let error_message = match claims_token {
         ClaimsToken::Access => String::from(
             "Your access token has expired. Please refresh your access token or log in again.",
         ),
         ClaimsToken::Refresh => String::from("Your session has expired. Please log in again."),
     };
 
+    println!("bearer_token: {}", token);
+
     let decoded_claim_token = JwtDecode::<Claims>(
-        &refresh_token,
+        &token,
         &DecodingKey::from_secret(&secret_key.as_ref()),
         &Validation::new(Algorithm::HS256),
     )

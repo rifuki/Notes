@@ -823,7 +823,7 @@ pub async fn get_all_users(
     }
 
     // Handle if not admin users.
-    let auth_role = &jwt_auth.sub.role;
+    let auth_role = &jwt_auth.iss;
     if auth_role != &UserRole::Admin.to_string() {
         return Err(AppErrorBuilder::<bool>::new(
             StatusCode::FORBIDDEN.as_u16(),

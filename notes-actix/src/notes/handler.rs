@@ -193,7 +193,7 @@ pub async fn get_all_notes(
     let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
 
     let auth_id = jwt_auth.aud;
-    let auth_role = jwt_auth.sub.role;
+    let auth_role = jwt_auth.iss;
 
     let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
@@ -498,7 +498,7 @@ pub async fn get_note(
 
     let note_id = pp.into_inner().id;
     let auth_id = jwt_auth.aud;
-    let auth_role = jwt_auth.sub.role;
+    let auth_role = jwt_auth.iss;
 
     let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
@@ -656,7 +656,7 @@ pub async fn update_note(
 
     let note_id = pp.into_inner().id;
     let auth_id = jwt_auth.aud;
-    let auth_role = jwt_auth.sub.role;
+    let auth_role = jwt_auth.iss;
 
     let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
     if let Err(err) = is_token_blacklisted {
@@ -836,7 +836,7 @@ pub async fn delete_note(
     let redis_pool = app_state.get_ref().redis_pool.get().await.unwrap();
 
     let auth_id = jwt_auth.aud;
-    let auth_role = jwt_auth.sub.role;
+    let auth_role = jwt_auth.iss;
     let note_id = pp.into_inner().id;
 
     let is_token_blacklisted = is_access_token_blacklisted(auth_id, redis_pool).await;
